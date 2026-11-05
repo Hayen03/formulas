@@ -1,0 +1,21 @@
+[package]
+name = "formulas"
+authors = ["Hayen"]
+version = "1.0.0"
+edition = "2024"
+description = "Engine for an embedded formula language."
+license = "MIT OR Apache-2.0"
+# repository = ""
+readme = "./readme.md"
+rust-version = "1.87"
+documentation = "https://hayen.ca/docs/formulas/formulas/index.html"
+keywords = ["engine", "formula"]
+
+[dependencies]
+indexmap = {version="2",features=["serde"]}
+rand = "0.10"
+rand_chacha = "0.10"
+serde = {version="1",features=["derive","rc"]}
+
+[dev-dependencies]
+serde_json = "1"
