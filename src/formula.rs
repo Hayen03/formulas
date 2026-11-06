@@ -4279,6 +4279,20 @@ impl Tokenizer {
                     '\\' => '\\',
                     '\'' => '\'',
                     '"' => '"',
+                    'u' => {
+                        let hex_digits: String = self.chars[self.position..self.position + 4]
+                            .iter()
+                            .collect();
+                        self.position += 4;
+                        let code_point = u32::from_str_radix(&hex_digits, 16).map_err(|source| Error::Lexical {
+                            position: self.position - 4,
+                            kind: LexError::InvalidUnicodeEscape { literal: hex_digits.clone(), source: Some(source) },
+                        })?;
+                        char::from_u32(code_point).ok_or_else(|| Error::Lexical {
+                            position: self.position - 4,
+                            kind: LexError::InvalidUnicodeEscape { literal: hex_digits.clone(), source: None },
+                        })?
+                    },
                     other => other,
                 });
             } else {

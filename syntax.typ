@@ -71,7 +71,7 @@ Integer-to-float conversion can lose precision for large integers. Floating-poin
 
 === Strings
 
-Both quote styles produce the same type. Ordinary strings recognize `\n`, `\r`, `\t`, `\\`, `\'`, and `\"`. For other escapes, the backslash is discarded: `'\q'` contains `q`. A string may contain a literal newline.
+Both quote styles produce the same type. Ordinary strings recognize `\n`, `\r`, `\t`, `\\`, `\'`, and `\"`. Unicode codepoint escape are also supported with `\uXXXX` syntax. For other escapes, the backslash is discarded: `'\q'` contains `q`. A string may contain a literal newline.
 
 ```text
 'hello'

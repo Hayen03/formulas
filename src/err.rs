@@ -46,6 +46,10 @@ pub enum LexError {
     IncompleteEscape,
     UnterminatedString,
     ExpectedIdentifier,
+    InvalidUnicodeEscape {
+        literal: String,
+        source: Option<ParseIntError>,
+    },
 }
 
 impl fmt::Display for LexError {
@@ -70,6 +74,9 @@ impl fmt::Display for LexError {
             Self::IncompleteEscape => write!(f, "Incomplete escape sequence in string"),
             Self::UnterminatedString => write!(f, "Unterminated string in formula"),
             Self::ExpectedIdentifier => write!(f, "Expected an identifier"),
+            Self::InvalidUnicodeEscape { literal, .. } => {
+                write!(f, "Invalid Unicode escape sequence: {literal}")
+            }
         }
     }
 }
@@ -79,6 +86,8 @@ impl StdError for LexError {
         match self {
             Self::InvalidInteger { source, .. } => Some(source),
             Self::InvalidFloat { source, .. } => Some(source),
+            Self::InvalidUnicodeEscape { source: Some(source), .. } => Some(source),
+            Self::InvalidUnicodeEscape { source: None, .. } => None,
             _ => None,
         }
     }
@@ -113,6 +122,7 @@ impl LexError {
             Self::IncompleteEscape => "IncompleteEscape",
             Self::UnterminatedString => "UnterminatedString",
             Self::ExpectedIdentifier => "ExpectedIdentifier",
+            Self::InvalidUnicodeEscape { .. } => "InvalidUnicodeEscape",
         };
         dict.insert("kind".into(), EvalValue::String(kind.into()));
         dict.insert("data".into(), EvalValue::Object(Arc::new(data)));
