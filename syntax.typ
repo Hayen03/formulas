@@ -1,9 +1,12 @@
-#set document(title: "Formula language reference")
+#set document(
+  title: "Formula language reference",
+  author: "Hayen",
+)
 #set page(paper: "a4", margin: 20mm, numbering: "1")
 #set text(size: 10pt)
 #set heading(numbering: "1.1")
 #set par(leading: 0.6em)
-#show raw.where(block: true): block.with(fill: luma(96%), inset: 8pt, radius: 3pt)
+#show raw.where(block: true): block.with(fill: luma(96%), inset: 8pt, radius: 3pt, breakable: false)
 #let reference(..cells) = table(
   columns: (43%, 57%),
   inset: 6pt,
@@ -40,7 +43,7 @@ True False None true false null
 
 Function parameters also cannot be named `args`. Builtin names such as `sum` and `range` are ordinary global bindings and can be shadowed. Dictionary property names may use keywords: `{'let': 1}.let` is valid.
 
-A complete formula may be wrapped as `${expression}` when passed to the engine's evaluation entry point. Text substitution is described at the end of this reference.
+A complete formula may be written as `${expression}` for explicit evaluation with `eval`. Text substitution is described at the end of this reference.
 
 == Datatypes and literals
 
@@ -62,7 +65,7 @@ Integer prefixes `0x`, `0b`, and `0o` also accept uppercase `X`, `B`, and `O`. H
 
 A float literal needs digits on both sides of its decimal point: use `0.5` and `1.0`, not `.5` or `1.`. Scientific notation is accepted by string conversion, such as `float('1e3')`, but not by numeric literal syntax. Negative numbers use the unary `-` operator.
 
-`nan()` returns a floating-point NaN. `inf()` returns positive infinity; `-inf()` gives negative infinity. Use `.isnan()` and `.isinf()` to test these values. Ordinary formula equality follows floating-point equality: `nan() == nan()` is false, and ordered comparisons involving NaN raise an error. Infinities compare numerically. NaN and infinities are truthy.
+`nan()` returns a floating-point NaN. `inf()` returns positive infinity; `-inf()` gives negative infinity. Use `.isnan()` and `.isinf()` to test these values. `nan() == nan()` is false. Ordered comparisons of NaN against a float or boolean raise an error; against an integer, NaN follows the total numeric ordering described under `order`. Infinities compare numerically. NaN and infinities are truthy.
 
 Integer-to-float conversion can lose precision for large integers. Floating-point arithmetic has normal rounding limitations. Keep integer calculations within the signed 64-bit range; overflow handling varies between operations.
 
@@ -78,7 +81,7 @@ Both quote styles produce the same type. Ordinary strings recognize `\n`, `\r`, 
 
 String literals are values; `$name` or `${...}` inside a string is not automatically evaluated. A quoted string consisting exactly of `${...}` has special delimiter handling: the entire contents are preserved, including inner quotes and backslashes. For example, `'${'ready'}'` is a string containing `${'ready'}`. See text formatting for explicit evaluation.
 
-String length, indexing, slicing, indexof and iteration count Unicode scalar values, rather than bytes or visual grapheme clusters.
+String length, indexing, slicing, `indexof`, and iteration count Unicode scalar values, rather than bytes or visual grapheme clusters.
 
 === Lists and dictionaries
 
@@ -100,7 +103,7 @@ The false values are `null`, `false`, numeric zero (including `-0.0`), `''`, `[]
 
 `float(value)` accepts integers, floats, booleans, and floating-point strings, including exponent notation. Numeric string conversions do not strip surrounding whitespace. `null`, lists, dictionaries, and functions cannot be converted to numbers.
 
-`str(value)` returns the engine's display representation. Strings are returned unchanged, booleans use lowercase names, builtin functions as `<builtin name>`, and user-defined functions display as the closure definition. This representation is for display, not a guaranteed round-trip serialization.
+`str(value)` returns a display representation. Strings include surrounding double quotes, booleans use lowercase names, builtin functions appear as `<builtin name>`, and user-defined functions display as the closure definition. This representation is for display, not a guaranteed round-trip serialization. Text formatting inserts string contents without adding those quotes.
 
 ```text
 str(fn x -> x * 2)
@@ -125,7 +128,7 @@ str(fn x -> x * 2)
 
 For `+` and `*`, mixing an integer with a float produces a float. Two booleans, or a boolean paired with an integer, instead produce a boolean: `+` performs truthy OR and `*` performs truthy AND. A boolean paired with a float is unsupported by these two operators. Strings are not implicitly converted for addition or multiplication.
 
-`//` and `%` accept integer/float operands, not booleans or numeric strings. Integer `//` computes its quotient through floating-point conversion. Integer `%`, and `%` with exactly one float, use a remainder with the dividend's sign. With two floats, `%` computes `a - floor(a / b) * b`, giving the divisor's sign for ordinary finite inputs. Both reject a zero divisor.
+`//` and `%` accept integer/float operands, not booleans or numeric strings. Integer `//` computes an exact integer quotient rounded down, including for negative divisors, and rejects a result outside the signed 64-bit range. Integer `%`, and `%` with exactly one float, use a remainder with the dividend's sign. With two floats, `%` computes `a - floor(a / b) * b`, giving the divisor's sign for ordinary finite inputs. Both reject a zero divisor.
 
 ```text
 -7 // 3
@@ -141,11 +144,11 @@ The numeric results are `-3`, `-1`, and `2.0`. String repetition gives `'ababab'
 
 === Comparisons and membership
 
-`==`, `!=`, `<`, `<=`, `>`, and `>=` compare values. Integers, floats, and booleans can compare numerically, with booleans represented by `0` and `1`; mixed integer/float comparisons convert the integer to a float. Strings compare lexicographically, and lists use lexicographic element comparison. `null` compares equal to itself. Dictionaries and functions do not support ordered comparisons; incompatible ordered operands raise an error.
+`==`, `!=`, `<`, `<=`, `>`, and `>=` compare values. Integers, floats, and booleans can compare numerically, with booleans represented by `0` and `1`. Mixed integer/float comparisons preserve integer precision instead of rounding large integers to floats. Signed-zero comparisons are type-dependent: `0.0 == -0.0` is true, but `0 == -0.0` is false and `0 > -0.0` is true. Strings compare lexicographically, and lists use lexicographic element comparison. `null` compares equal to itself. Dictionaries and functions do not support ordered comparisons; incompatible ordered operands raise an error.
 
-`===` tests strict equality, considering both type and value. `!==` tests strict inequality. Strict equality for function values compares their identity, not just their behavior.
+`===` tests strict equality, considering both type and value, recursively for lists and dictionaries. `!==` tests strict inequality. Strict equality for function values compares their identity, not just their behavior. Float strict equality still treats NaN as unequal to itself and the two signs of zero as equal.
 
-Equality of unrelated types is false. Function equality compares builtin identity or a user function's definition and captured state; there is no separate identity operator.
+Equality of unrelated types is false. Ordinary function equality compares builtin names or a user function's definition and captured state; strict function equality compares identity.
 
 Comparisons chain. `a < b <= c` checks each adjacent pair, evaluates the middle expression once, and stops at the first false comparison.
 
@@ -187,9 +190,9 @@ The results are `10`, `0`, `false`, and `'positive'`. Null fallback does not sup
 
 === Bitwise operations
 
-Binary `&`, `|`, and `^` mean bitwise AND, OR, and XOR and require two integers. Unary `~` complements an integer's 64 bits; on a boolean it first converts to `0` or `1` and returns an integer.
+Binary `&`, `|`, and `^` mean bitwise AND, OR, and XOR. They accept integers and booleans, converting booleans to `0` or `1`. Unary `~` complements an integer's 64 bits; on a boolean it first converts to `0` or `1` and returns an integer.
 
-Shifts require integer operands and a nonnegative shift count. `<<` shifts left, `>>` shifts right with sign extension, and `>>>` shifts right with zero fill. Bits shifted out are discarded. For counts of 64 or more, left and logical right shifts return zero; arithmetic right shifts return `-1` for negative inputs and zero otherwise.
+Shifts accept integer or boolean operands and require a nonnegative shift count after boolean conversion. `<<` shifts left, `>>` shifts right with sign extension, and `>>>` shifts right with zero fill. Bits shifted out are discarded. For counts of 64 or more, left and logical right shifts return zero; arithmetic right shifts return `-1` for negative inputs and zero otherwise.
 
 ```text
 0b1100 & 0b1010
@@ -213,7 +216,7 @@ The table runs from strongest binding to weakest. Parentheses override it.
   [`&`], [Left to right.],
   [`^`], [Left to right.],
   [`|`], [Left to right.],
-  [`==`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not in`], [Chained comparisons.],
+  [`==`, `!=`, `===`, `!==`, `<`, `<=`, `>`, `>=`, `in`, `not in`], [Chained comparisons.],
   [`not`], [Unary, right to left.],
   [`and`, `&&`], [Left to right.],
   [`xor`], [Left to right.],
@@ -224,9 +227,94 @@ The table runs from strongest binding to weakest. Parentheses override it.
 
 Thus `not a == b` means `not (a == b)`, while `!a == b` means `(!a) == b`. `let` and `fn` may appear wherever an operand is accepted, but their bodies consume a full expression: `2 * let x = 3 for x + 4` means `2 * (let x = 3 for x + 4)`.
 
+== Formal grammar
+
+The following EBNF describes expressions after tokenization. Quoted text denotes a terminal; commas join successive items, `|` separates alternatives, brackets denote an optional item, and braces denote repetition. Parentheses group grammar items. `end_of_input` requires the entire expression to be consumed. Whitespace may separate tokens. The `${...}` delimiters belong to explicit evaluation and text formatting, not to the expression grammar.
+
+=== Expressions and precedence
+
+```text
+formula       = expression, end_of_input ;
+expression    = conditional ;
+conditional   = coalescing,
+                ["if", coalescing, "else", expression] ;
+coalescing    = disjunction, ["??", coalescing] ;
+disjunction   = exclusive_or, {("or" | "||"), exclusive_or} ;
+exclusive_or  = conjunction, {"xor", conjunction} ;
+conjunction   = negation, {("and" | "&&"), negation} ;
+negation      = "not", negation | comparison ;
+comparison    = bit_or, {comparison_op, bit_or} ;
+comparison_op = "==" | "!=" | "===" | "!=="
+              | "<" | "<=" | ">" | ">=" | "in" | "not", "in" ;
+bit_or        = bit_xor, {"|", bit_xor} ;
+bit_xor       = bit_and, {"^", bit_and} ;
+bit_and       = shift, {"&", shift} ;
+shift         = sum, {("<<" | ">>" | ">>>"), sum} ;
+sum           = product, {("+" | "-"), product} ;
+product       = unary, {("*" | "/" | "//" | "%"), unary} ;
+unary         = ("+" | "-" | "!" | "~"), unary | postfix ;
+postfix       = primary, {suffix} ;
+```
+
+Repetitions of binary operators associate left to right, except that comparisons form a chain. The recursive right operands of `??` and the conditional express their right associativity. At every level, an available operator is consumed before returning to the enclosing expression. Likewise, `let` and `fn` bodies extend through the full expression that follows them; parenthesize the whole construct to apply an operator or postfix operation to its result.
+
+=== Values and postfix operations
+
+```text
+primary    = scalar | identifier | dice
+           | "(", expression, ")" | list | dictionary
+           | let_expression | function_expression ;
+scalar     = integer | float | string
+           | "true" | "True" | "false" | "False"
+           | "null" | "None" ;
+suffix     = "(", [arguments], ")"
+           | ".", (identifier | integer)
+           | "[", expression, "]"
+           | "[", [expression], ":", [expression],
+             [":", [expression]], "]" ;
+arguments  = expression, {",", expression} ;
+list       = "[", "]"
+           | "[", expression, {",", expression}, [","], "]"
+           | "[", expression, comprehension, "]" ;
+dictionary = "{", "}"
+           | "{", entry, {",", entry}, [","], "}"
+           | "{", entry, comprehension, "}" ;
+entry      = expression, ":", expression ;
+```
+
+`identifier`, `integer`, `float`, and `string` denote the lexical forms described under source and literals. Numeric tokens are unsigned in spelling; signs are unary operators. `dice` denotes decimal digits, lowercase `d`, and decimal digits with no intervening whitespace, as in `2d6`; it is shorthand for a call to `dice`.
+
+An optional leading `$` is removed from identifiers before recognizing names or keywords. In expression positions, the literal words and `let`, `fn`, and unary `not` take precedence over variable references; after a dot, keywords are accepted as property names. A dotted integer must be nonnegative. Adjacent characters that form a single token stay together: use `0.5` for a float and `(1).abs()` to make an integer receiver unambiguous.
+
+=== Bindings, functions, and comprehensions
+
+```text
+let_expression      = "let", binding, {",", binding},
+                      "for", expression ;
+binding             = pattern, "=", expression ;
+function_expression = "fn", [parameters], "->", expression ;
+parameters          = pattern, {",", pattern} ;
+pattern             = binding_name | list_pattern ;
+list_pattern        = "[", [pattern_items], "]" ;
+pattern_items       = pattern_item, {",", pattern_item}, [","] ;
+pattern_item        = pattern | rest_pattern ;
+rest_pattern        = "*", binding_name ;
+comprehension       = "for", targets, "in", coalescing,
+                      ["if", coalescing] ;
+targets             = pattern_item, {",", pattern_item} ;
+```
+
+The grammar is subject to these binding constraints:
+
+- `binding_name` is an identifier other than a reserved word listed under source and names. `_` is allowed and discards its value. Within one `let`, parameter list, or comprehension target list, names must be unique across all nested patterns, except for `_`.
+- Function parameter patterns also exclude `args`, including inside nested lists and rest captures.
+- Each list-pattern level, and the outer comma-separated comprehension target list, permits at most one rest capture. A rest capture cannot be the sole unbracketed comprehension target; use `[*rest]` instead. A bare rest capture is not a `let` binding or function parameter.
+
+List and dictionary literals and list patterns allow trailing commas. Calls, function parameter lists, `let` binding lists, and comprehension target lists do not. A comprehension has only one `for` and one optional filter; its source and filter use `coalescing`, so a conditional there must be parenthesized. Value-type and destructuring-length requirements are checked during evaluation, as described in the corresponding sections.
+
 == Indexing, slicing, and members
 
-Lists and strings use zero-based integer indexes. Negative indexes count from the end: `-1` is the last element. An out-of-range index is an error. Lists additionally accept dotted nonnegative indexes, such as `items.0`.
+Lists and strings use zero-based integer indexes. Negative indexes count from the end: `-1` is the last element. An out-of-range index is an error. Both also accept dotted nonnegative indexes, such as `[10, 20].0` or `'abc'.1`.
 
 Dictionary lookup accepts a string key in brackets or a property name after a dot (if the name is a valid identifier). Use brackets for computed keys or names containing punctuation.
 
@@ -273,6 +361,10 @@ let [x, [y, _]] = [2, [3, 99]] for x + y
 
 The results are `10` and `5`. A binding pattern is a name or a nested list of patterns. Without a rest capture, a list pattern requires a list of exactly the corresponding length at every level. `_` discards a value and can be repeated. Other names must be unique across one `let`'s binding patterns. Empty patterns and trailing commas inside list patterns are allowed.
 
+Discarding a value does not skip its evaluation: `let _ = error('failed') for 0` still raises an error. Surrounding list patterns still enforce their type and length requirements, and discarded function parameters still count toward the minimum argument count and remain in `args`.
+
+`_` creates no binding and does not shadow an existing variable named `_`. Outside a pattern, `_` is an ordinary variable reference. Thus `let _ = 8 for _` returns an existing outer `_`, or fails if none is defined. `$_` has the same meaning as `_`, including in patterns; names such as `_value` are ordinary names.
+
 Inside a list pattern, `*name` captures the remaining elements as a list, possibly empty. It may appear at the beginning, middle, or end: elements before it match the prefix, and elements after it match the suffix. Each list level allows at most one rest capture. The input must contain enough elements for all non-rest patterns. Use `*_` to discard the remaining elements. The capture must be a name, not another pattern.
 
 ```text
@@ -298,7 +390,7 @@ The results are `5`, `20`, `12`, and `3`. Calls use positional arguments. Functi
 
 User functions require at least as many arguments as declared parameters. Extra arguments are accepted, and `args` contains the complete argument list. This lets a callback ignore extra context such as an element index. Builtins enforce their own argument counts; passing a builtin directly as a callback can fail if it accepts fewer arguments than the callback receives.
 
-Functions capture referenced local values when they are created. These captures take precedence over the calling environment, regardless of the variable's name. Engine globals remain dynamic and are resolved when the function is called. Parameters and `args` take priority over captures; names unresolved at creation may fall back to the caller's environment.
+Functions capture referenced local values when they are created. These captures take precedence over the calling environment, regardless of the variable's name. Global bindings remain dynamic and are resolved when the function is called. Parameters and `args` take priority over captures; names unresolved at creation may fall back to the caller's environment.
 
 Arguments are evaluated eagerly, left to right, before resolving and calling the callee or method receiver. Merely creating an `fn` value does not evaluate its body. Evaluation errors propagate to the caller.
 
@@ -337,7 +429,7 @@ A comprehension has one `for` clause and at most one filter. Nest comprehensions
 
 == Default global functions
 
-These names are installed by a default engine. The host may replace globals or supply additional ones.
+The following functions are available as standard global bindings. Their names can be shadowed like other variable names.
 
 === Values and numbers
 
@@ -345,7 +437,7 @@ These names are installed by a default engine. The host may replace globals or s
   [*Call*], [*Behavior*],
   [`type(value)`], [Return the type name listed under datatypes.],
   [`str(value)`, `int(value)`, `float(value)`, `bool(value)`], [Convert as described under truthiness and conversion.],
-  [`exists(value)`], [Return if a variable of the given name exists in the current environment.],
+  [`exists(name)`], [Return whether a variable with the given string name exists in the current environment.],
   [`abs(number)`], [Absolute value of an integer or float, preserving its type.],
   [`pow(base, exponent)`], [Exponentiation; see arithmetic.],
   [`round(value[, digits])`], [Round with halfway ties to even; digits default to zero. Negative digits round to tens, hundreds, etc. Return an integer when digits are zero or negative, otherwise a float. Nonfinite values and unsupported digit ranges are errors.],
@@ -353,10 +445,11 @@ These names are installed by a default engine. The host may replace globals or s
   [`nan()`, `inf()`], [Return NaN or positive infinity as a float.],
   [`dice(count, sides)`], [Sum count random integers from 1 through sides, inclusive. Count must be nonnegative and sides positive; arguments use integer conversion. Zero dice return zero.],
   [`random()`], [Random float in the inclusive interval from 0 to 1.],
-  [`nan()`, `inf()`], [Return NaN or positive infinity as a float.],
 )
 
-`2d6` is shorthand for `dice(2, 6)`. Both numbers must be decimal integer literals, separated by lowercase `d` without spaces. Use `dice(count, sides)` for computed arguments. Random operations share the engine's random-number stream; a host-supplied seed makes that stream reproducible.
+`2d6` is shorthand for `dice(2, 6)`. Both numbers must be decimal integer literals, separated by lowercase `d` without spaces. Use `dice(count, sides)` for computed arguments.
+
+Random operations share one stream of draws. Reproducing results requires the same initial seed and the same sequence of operations and arguments. Random draws advance that stream; repeating a formula continues the sequence rather than restarting it. Short-circuiting, conditionals, and callbacks can change which random operations run. The language has no seed-setting expression.
 
 === Collections and callbacks
 
@@ -367,30 +460,32 @@ These names are installed by a default engine. The host may replace globals or s
   [`range(start, stop[, step])`], [Integer sequence with exclusive stop. Step defaults to 1, may be negative, and cannot be zero. Arguments use integer conversion.],
   [`zip(list, ...)`], [Rows of corresponding elements, stopping at the shortest list. Supply at least one list.],
   [`fromentries(pairs)`], [Build a dictionary from two-element lists `[string_key, value]`; later duplicates win.],
-  [`indexof(container, value)`], [First matching list index, string substring byte offset, or dictionary key whose value matches. Return `null` when absent.],
+  [`indexof(container, value)`], [First matching list index, string substring index in Unicode scalar values, or dictionary key whose value matches. Return `null` when absent.],
   [`sum(list)`, `mul(list)`], [Numeric sum or product. Booleans count as 0/1; a float makes the result floating-point. Empty sum is 0; empty product is 1.],
   [`enum(list)`, `flatten(list)`], [Equivalent to the corresponding list methods.],
   [`map(list, f)`, `filter(list, f)`], [Equivalent to list `.map(f)` and `.filter(f)`.],
-  [`drop(list, count)`], [Equivalent to list `.skip(count)`.],
+  [`drop(list, count)`], [Equivalent to list `.drop(count)`: remove the last count elements.],
   [`cumul(list, f[, initial])`, `reduce(list, f[, initial])`], [Equivalent to the corresponding list accumulator methods.],
   [`apply(f, arguments)`], [Call f with the list's elements as positional arguments; equivalent to `arguments.apply(f)`.],
   [`method(value, name)`], [Look up a method on a value and return it if found, `null` otherwise.],
-  [`order(a, b)`], [Compares two numeric values and returns an integer indicating their order. Returns a negative integer if the first is less than the second, zero if they are equal, and a positive integer if the first is greater.],
+  [`order(a, b)`], [Compare any two values using total ordering. Return -1, 0, or 1 when the first is less than, equal in order to, or greater than the second.],
 )
 
 `order` uses a total ordering between all possible values. Incompatible types are sorted by their types in this order:
 ```
 null < int, float and bool < string < list < dict < function
 ```
-`bool` are treated as `0` and `1`. Uses `float` total ordering for comparisons with numeric values.
-`list` are sorted in lexicographic order based on their elements, using the total ordering defined above.
-`dict` are sorted by their keys in lexicographic order, using the total ordering defined above.
+Booleans count as `0` and `1`. Numeric total ordering distinguishes negative zero from positive zero and places negative NaNs before negative infinity and positive NaNs after positive infinity. Mixed integer/float ordering preserves integer precision.
+
+Lists compare length first, then compare corresponding elements by total ordering when lengths match. Dictionaries compare their entries in sorted-key order: each key is compared first, then its value; a shared entry prefix is followed by a length comparison. All functions tie in this ordering, even when they are unequal under `==` or `===`.
 
 === Evaluation and errors
 
 `eval(value[, bindings])` returns non-string values unchanged. For a string recognized as one complete expression, optionally wrapped in `${...}`, it evaluates that expression and preserves its result type. Other strings are processed as formatted text. The optional dictionary supplies local bindings that override the calling environment. Thus `eval('1 + 2')` produces `3`, and `eval('${x + 1}', {'x': 2})` also produces `3`.
 
-`error(message)` stops evaluation with a user error containing the message's display representation. `error()` uses the default message `Erreur!`. Additional arguments are evaluated but ignored.
+An unwrapped expression may have surrounding whitespace. A `${...}` wrapper must occupy the entire string to preserve the result type; surrounding whitespace or text instead selects formatting and returns a string.
+
+`error(message)` stops evaluation with a user error containing the message's text representation. `error()` uses the default message `Error!`. Additional arguments are evaluated but ignored.
 
 `try(f[, if_err])` attempts to call the function `f`. If it succeeds, its result is returned. If it fails, the optional `if_err` function is called with the error dictionary; if `if_err` is not provided, `null` is returned.
 
@@ -404,11 +499,11 @@ The signatures in this section omit the receiver. For example, `.len()` means `v
   [*Method*], [*Behavior*],
   [`.abs()`, `.pow(exponent)`], [Absolute value and exponentiation, as with the globals. Available on integers and floats.],
   [`.min(value, ...)`, `.max(value, ...)`], [Global min/max with the receiver as the first candidate. No additional argument is required.],
-  [`.clamp(low, high)`], [Limit the value to inclusive bounds. Integer receivers convert bounds to integers; float receivers to floats. Low must not exceed high; float bounds must not be NaN.],
+  [`.clamp(low, high)`], [Limit the value to inclusive bounds. Integer receivers convert bounds to integers and require low not to exceed high. Float receivers convert bounds to floats, swap reversed bounds, and reject NaN bounds.],
   [`.sign()`], [Integer result indicating sign. Integers return -1, 0, or 1. Floats return -1 or 1 according to the sign bit, including signed zero; NaN gives 0.],
   [`.lerp(start, end)`], [Use the receiver as the factor: `start + (end - start) * receiver`. Return a float. The factor is not clamped.],
-  [Integer: `.divmod(divisor)`], [Return `[quotient, remainder]` with Euclidean division: remainder is nonnegative. Reject zero divisors.],
-  [Integer: `.tdivmod(divisor)`], [Return `[quotient, remainder]` with truncated division: quotient is rounded towards zero. Reject zero divisors.],
+  [Integer: `.divmod(divisor)`], [Return `[quotient, remainder]` with the quotient rounded down; a nonzero remainder has the divisor's sign. The divisor uses integer conversion. Reject zero divisors and quotient overflow.],
+  [Integer: `.tdivmod(divisor)`], [Return `[quotient, remainder]` with the quotient rounded toward zero; a nonzero remainder has the dividend's sign. The divisor uses integer conversion. Reject zero divisors and quotient overflow.],
   [Integer: `.rotl(count)`, `.rotr(count)`], [Rotate the 64-bit representation left or right. Count must be a nonnegative integer; the effective count is modulo 64.],
   [Float: `.round([digits])`], [Same rounding and return types as global `round`.],
   [Float: `.ceil()`, `.floor()`], [Round upward or downward and convert to an integer.],
@@ -423,7 +518,7 @@ Parentheses make numeric receivers clear: `(-3).abs()` and `(2.5).round()`. For 
 #reference(
   [*Method*], [*Behavior*],
   [`.len()`], [Number of Unicode scalar values.],
-  [`.indexof(text)`], [First substring's UTF-8 byte offset, or `null`.],
+  [`.indexof(text)`], [First substring's index in Unicode scalar values, or `null`.],
   [`.lower()`, `.upper()`], [Unicode lowercase or uppercase conversion.],
   [`.trim()`], [Remove leading and trailing whitespace.],
   [`.replace(old, new)`], [Replace all occurrences of old with new. Both arguments are strings.],
@@ -449,11 +544,11 @@ String `.slice` validates bounds rather than clamping them like bracket slicing.
   [`.sum()`, `.mul()`], [Numeric sum/product, as with the globals.],
   [`.min()`, `.max()`], [Select an element from a nonempty list. Incomparable comparisons are treated as ties; min keeps the first tied element and max the last.],
   [`.indexof(value)`], [First equal element's index, or `null`.],
-  [`.unique()`], [Keep the first occurrence of each value according to equality.],
+  [`.unique()`], [Keep the first occurrence of each value according to equality. Nested lists and dictionaries are supported; elements need not be hashable.],
   [`.enum()`], [Produce `[index, value]` pairs, starting at index zero.],
   [`.flatten()`], [Remove one level of nested lists; retain non-list items.],
   [`.flat()`], [Recursively flatten all nested lists.],
-  [`.sort()`], [Stable ascending sort using the engine's total ordering, described below.],
+  [`.sort()`], [Stable ascending sort using the total ordering described under `order`.],
   [`.reverse()`], [Return elements in reverse order.],
   [`.take(count)`], [First count elements; count must be nonnegative.],
   [`.skip(count)`, `.drop(count)`], [Discard the first or last count elements; count must be nonnegative.],
@@ -462,7 +557,7 @@ String `.slice` validates bounds rather than clamping them like bracket slicing.
   [`.windows(size)`], [All overlapping groups of exactly size elements. Size must be positive.],
   [`.tryget(index[, default])`], [Indexed value, or default when out of bounds. Negative indexes count from the end. Default is `null`.],
   [`.pop([index])`], [Return `[remaining_list, removed_value]`. Index defaults to the last element and supports negative indexing. Empty lists and invalid indexes fail.],
-  [`.coalesce()`], [First non-null value, or `null`. Falsey non-null values are retained.],
+  [`.coalesce()`], [First non-null value, or `null`. Falsey non-null values are retained. All list elements have already been evaluated; this method does not short-circuit their evaluation like `??`.],
   [`.join(separator)`], [Join display representations with a string separator.],
   [`.fmt()`], [Concatenate display representations with no separator. Function elements are first called with no arguments.],
   [`.choice()`], [Uniformly select one element; the list must be nonempty.],
@@ -485,14 +580,17 @@ List callbacks receive `(value, index)`, with zero-based indexes, unless otherwi
   [`.find(f[, default])`], [First item with a truthy callback result, or default (`null` when omitted). Stop at the first match.],
   [`.all([f])`, `.any([f])`], [Test item truthiness, or callback truthiness if supplied. Short-circuit at the first decisive result. Empty lists give true for all and false for any.],
   [`.sortby(f)`], [Stable ascending sort by computed keys. Each key is evaluated once. Keys must support ordinary comparisons.],
-  [`.minby(f)`, `.maxby(f)`], [Return an item with the smallest/largest computed key. Keys must support ordinary comparisons. Keep the first tie; empty lists fail.],
+  [`.minby(f)`, `.maxby(f)`], [Return an item with the smallest/largest computed key under total ordering. Keep the first tie; empty lists fail.],
+  [`.extremeby(f)`], [Return `[minimum_item, maximum_item]` by computed key under total ordering. Keep the first tie for each extreme; empty lists fail.],
   [`.groupby(f)`], [Dictionary of lists, grouped by string keys returned by f. Preserve first-seen group order and original item order.],
   [`.cumul(f[, initial])`], [Return successive accumulator values. Callback receives `(accumulator, value, index)`.],
   [`.reduce(f[, initial])`], [Return the final accumulator. Callback receives `(accumulator, value, index)`.],
   [`.apply(f)`], [Call f once, passing all list elements as positional arguments.],
 )
 
-Without an initial accumulator, `cumul` and `reduce` start with the first element and invoke the callback from index 1. `cumul` includes that first element in its output. With an initial value, both start processing at index 0; `cumul` includes only the updated accumulators, not the initial value itself. Empty `cumul` returns `[]`; empty `reduce` requires an initial value and returns it.
+For `sortby`, `minby`, `maxby`, `extremeby`, and `groupby`, each key function is called exactly once per element, in input order, before sorting, selection, or grouping. `sortby` rejects incomparable keys, including a key that cannot compare with itself in a one-element list; the extreme-selection methods use total ordering instead.
+
+Without an initial accumulator, `cumul` and `reduce` start with the first element and invoke the callback from index 1. `cumul` includes that first element in its output. With an initial value, both start processing at index 0; `cumul` includes only the updated accumulators, not the initial value itself. Empty `cumul` returns `[]`; empty `reduce` requires an initial value and returns it. An explicit `null` is an initial value, not an omitted argument: `[].reduce(fn total, value -> value, null)` returns `null`.
 
 ```text
 [2, 4].map(fn value, index -> value + index)
