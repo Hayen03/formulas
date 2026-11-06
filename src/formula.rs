@@ -239,10 +239,18 @@ impl std::fmt::Display for EvalValue {
             EvalValue::Bool(value) => write!(f, "{}", value),
             EvalValue::Int(value) => write!(f, "{}", value),
             EvalValue::Float(value) => {
-                if value.is_finite() && value.fract() == 0.0 {
+                if value.is_nan() {
+                    write!(f, "nan")
+                } else if value.is_infinite() {
+                    if value.is_sign_negative() {
+                        write!(f, "-inf")
+                    } else {
+                        write!(f, "inf")
+                    }
+                } else if value.fract() == 0.0 {
                     write!(f, "{value:.1}")
                 } else {
-                    write!(f, "{value}")
+                    write!(f, "{}", value)
                 }
             },
             EvalValue::String(value) => write!(f, "\"{}\"", value),
@@ -483,6 +491,9 @@ impl EvalValue {
     }
 
     /// Formats the value using the string conventions of the formula language.
+    /// Gives information on the value and its type in a human-readable format.
+    /// 
+    /// There is no guarantee that the output can be parsed back into the same value.
     pub fn repr(&self) -> Arc<str> {
         match self {
             Self::Null => "null".into(),
@@ -498,11 +509,13 @@ impl EvalValue {
                     } else {
                         "inf".into()
                     }
+                } else if value.fract() == 0.0 {
+                    format!("{value:.1}").into()
                 } else {
                     value.to_string().into()
                 }
             }
-            Self::String(value) => value.clone(),
+            Self::String(value) => format!("{:?}", value).into(),
             Self::Array(values) => format!(
                 "[{}]",
                 values
@@ -524,7 +537,7 @@ impl EvalValue {
                     .join(", ")
             )
             .into(),
-            Self::Func(_) => "<function>".into(),
+            Self::Func(func) => format!("{}", func).into(),
         }
     }
 
