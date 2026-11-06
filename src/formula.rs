@@ -1029,7 +1029,7 @@ impl EvalValue {
 
     pub fn func(name: &str, func: fn(&[EvalValue], &mut FormulaEngine, &Env) -> Result<EvalValue>) -> (Arc<str>, Self) {
         let key: Arc<str> = Arc::from(name);
-        (key.clone(), EvalValue::Func(Function::Builtin(key, func).into()))
+        (key.clone(), EvalValue::Func(Function::Builtin(key, Arc::new(func)).into()))
     }
 }
 
@@ -1556,17 +1556,28 @@ impl std::fmt::Display for FormulaClosure {
     }
 }
 
+pub type BuiltinFn = dyn Fn(&[EvalValue], &mut FormulaEngine, &Env) -> Result<EvalValue> + Send + Sync + 'static;
+
 /// Callable formula value backed by either a lexical closure or a registered built-in.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum Function {
     User(FormulaClosure),
-    Builtin(Arc<str>, fn(&[EvalValue], &mut FormulaEngine, &Env) -> Result<EvalValue>),
+    Builtin(Arc<str>, Arc<BuiltinFn>),
 }
 impl std::fmt::Display for Function {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::User(closure) => write!(f, "<{}>", closure),
             Self::Builtin(name, _) => write!(f, "<builtin {}>", name),
+        }
+    }
+}
+
+impl std::fmt::Debug for Function {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::User(closure) => write!(f, "User({:?})", closure),
+            Self::Builtin(name, _) => write!(f, "Builtin({})", name),
         }
     }
 }
@@ -1616,7 +1627,7 @@ impl TryFrom<FunctionSerializer> for Function {
                         name: name.to_string(), reason: "Builtin function was not a builtin".into(),
                     });
                 };
-                Ok(Self::Builtin(name.clone(), *ptr))
+                Ok(Self::Builtin(name.clone(), ptr.clone()))
             }
         }
     }
@@ -5083,7 +5094,7 @@ use rand::{Rng, RngExt};
     }
     fn build_dict(dict: &mut IndexMap<Arc<str>, EvalValue>, typ: &str, name: &str, func: fn(&[EvalValue], &mut FormulaEngine, &Env) -> Result<EvalValue>) {
         let key: Arc<str> = Arc::from(format!("{typ}_{name}"));
-        dict.insert(name.into(), EvalValue::Func(Function::Builtin(key, func).into()));
+        dict.insert(name.into(), EvalValue::Func(Function::Builtin(key, Arc::new(func)).into()));
     }
     fn insert_registry(dict: &mut IndexMap<Arc<str>, EvalValue>, reg: &IndexMap<Arc<str>, EvalValue>) {
         for value in reg.values() {
