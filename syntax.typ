@@ -263,7 +263,7 @@ Repetitions of binary operators associate left to right, except that comparisons
 ```text
 primary    = scalar | identifier | dice
            | "(", expression, ")" | list | dictionary
-           | let_expression | function_expression ;
+           | let_expression | function_expression | "_";
 scalar     = integer | float | string
            | "true" | "True" | "false" | "False"
            | "null" | "None" ;
@@ -363,7 +363,7 @@ The results are `10` and `5`. A binding pattern is a name or a nested list of pa
 
 Discarding a value does not skip its evaluation: `let _ = error('failed') for 0` still raises an error. Surrounding list patterns still enforce their type and length requirements, and discarded function parameters still count toward the minimum argument count and remain in `args`.
 
-`_` creates no binding and does not shadow an existing variable named `_`. Outside a pattern, `_` is a special expression that cannot be evaluated, but can be used as a placeholder in certain contexts, mostly for programs that use the engine. Thus `let _ = 8 for _` will fail. Joker expression can be replaced by other expression. Names such as `_value` are ordinary names.
+`_` creates no binding and does not shadow an existing variable named `_`. Outside a pattern, `_` is a special joker expression that cannot be evaluated, but can be used as a placeholder in certain contexts, mostly for programs that use the engine. Thus `let _ = 8 for _` will fail. Joker expression can be replaced by other expression. Names such as `_value` are ordinary names.
 
 Inside a list pattern, `*name` captures the remaining elements as a list, possibly empty. It may appear at the beginning, middle, or end: elements before it match the prefix, and elements after it match the suffix. Each list level allows at most one rest capture. The input must contain enough elements for all non-rest patterns. Use `*_` to discard the remaining elements. The capture must be a name, not another pattern.
 
@@ -445,7 +445,37 @@ The following functions are available as standard global bindings. Their names c
   [`nan()`, `inf()`], [Return NaN or positive infinity as a float.],
   [`dice(count, sides)`], [Sum count random integers from 1 through sides, inclusive. Count must be nonnegative and sides positive; arguments use integer conversion. Zero dice return zero.],
   [`random()`], [Random float in the inclusive interval from 0 to 1.],
+  [`ln(x)`], [Natural logarithm of a float.],
+  [`log(x, base)`], [Logarithm of a float with the given base.],
+  [`log2(x)`], [Base-2 logarithm of a float.],
+  [`log10(x)`], [Base-10 logarithm of a float.],
+  [`exp(x)`], [Exponential of a float, e^x.],
+  [`expm1(x)`], [Exponential of a float minus one, e^x - 1.],
+  [`ln1p(x)`], [Natural logarithm of 1 plus a float, ln(1 + x).],
+  [`sin(x)`], [Sine of a float, with x in radians.],
+  [`cos(x)`], [Cosine of a float, with x in radians.],
+  [`tan(x)`], [Tangent of a float, with x in radians.],
+  [`asin(x)`], [Arcsine of a float, returning radians.],
+  [`acos(x)`], [Arccosine of a float, returning radians.],
+  [`atan(x)`], [Arctangent of a float, returning radians.],
+  [`atan2(y, x)`], [Computes the four quadrant arctangent of y and x in radians.],
+  [`sec(x)`], [Secant of a float, with x in radians.],
+  [`csc(x)`], [Cosecant of a float, with x in radians.],
+  [`cot(x)`], [Cotangent of a float, with x in radians.],
+  [`degrees(x)`], [Convert radians to degrees.],
+  [`radians(x)`], [Convert degrees to radians.],
+  [`sqrt(x)`], [Square root of a nonnegative finite x.],
+  [`cbrt(x)`], [Cube root of a x.],
+  [`isclose(x, y[, rel_tol, abs_tol])`], [Return whether two floats are close within the given relative and absolute tolerances.],
+  [`pi()`], [Mathematical constant π.],
+  [`e()`], [Mathematical constant e.],
+  [`eps()`], [Machine epsilon for floating-point numbers.],
+  [`hypot(x, y)`], [Hypotenuse of a right-angled triangle with sides x and y.],
 )
+
+Logarithms must have positive and finite arguments. Bases must be positive and not equal to 1. The input for `ln1p` must be greater than -1.
+
+Inputs for `asin(x)` and `acos(x)` must be in the range $[-1, 1]$.
 
 `2d6` is shorthand for `dice(2, 6)`. Both numbers must be decimal integer literals, separated by lowercase `d` without spaces. Use `dice(count, sides)` for computed arguments.
 
@@ -469,6 +499,7 @@ Random operations share one stream of draws. Reproducing results requires the sa
   [`apply(f, arguments)`], [Call f with the list's elements as positional arguments; equivalent to `arguments.apply(f)`.],
   [`method(value, name)`], [Look up a method on a value and return it if found, `null` otherwise.],
   [`order(a, b)`], [Compare any two values using total ordering. Return -1, 0, or 1 when the first is less than, equal in order to, or greater than the second.],
+  [`genlist(n, f)`], [Generate a list of length n by applying function f to each index. Equivalent to `[f(i) for i in range(n)]` or `range(n).map(f)`.],
 )
 
 `order` uses a total ordering between all possible values. Incompatible types are sorted by their types in this order:
@@ -505,11 +536,40 @@ The signatures in this section omit the receiver. For example, `.len()` means `v
   [Integer: `.divmod(divisor)`], [Return `[quotient, remainder]` with the quotient rounded down; a nonzero remainder has the divisor's sign. The divisor uses integer conversion. Reject zero divisors and quotient overflow.],
   [Integer: `.tdivmod(divisor)`], [Return `[quotient, remainder]` with the quotient rounded toward zero; a nonzero remainder has the dividend's sign. The divisor uses integer conversion. Reject zero divisors and quotient overflow.],
   [Integer: `.rotl(count)`, `.rotr(count)`], [Rotate the 64-bit representation left or right. Count must be a nonnegative integer; the effective count is modulo 64.],
-  [Float: `.round([digits])`], [Same rounding and return types as global `round`.],
-  [Float: `.ceil()`, `.floor()`], [Round upward or downward and convert to an integer.],
-  [Float: `.bits()`], [Return the raw floating-point bit pattern as a signed 64-bit integer.],
-  [Float: `.isnan()`, `.isinf()`], [Boolean tests for NaN or either infinity.],
+  [`.round([digits])`], [Same rounding and return types as global `round`. Has no effect on `int`.],
+  [`.ceil()`, `.floor()`], [Round upward or downward and convert to an integer. Has no effect on `int`.],
+  [`.bits()`], [Return the raw floating-point bit pattern as a signed 64-bit integer. Has no effect on `int`.],
+  [`.isnan()`, `.isinf()`], [Boolean tests for NaN or either infinity. `int`s return `false` for both.],
+  [`.isfin()`], [Boolean test for finite numbers. `int`s return `true` for this test.],
+  [`.sqrt()`], [Square root of nonnegative finite self.],
+  [`.cbrt()`], [Cube root of self.],
+  [`.trunc()`], [Truncate the self by removing the fractional part. Has no effect on `int`s.],
+  [`.fract()`], [Fractional part of a number. Conserves the sign. Returns 0.0 for `int`s.],
+  [`.ln()`], [Natural logarithm of self.],
+  [`.log(base)`], [Logarithm of self with the given base.],
+  [`.log10()`], [Base-10 logarithm of self.],
+  [`.log2()`], [Base-2 logarithm of self.],
+  [`.exp()`], [Exponential function of self.],
+  [`.expm1()`], [Compute `exp(self) - 1` accurately for small self.],
+  [`.ln1p()`], [Compute `ln(1 + self)` accurately for small self.],
+  [`.sin()`], [Sine of a self, with the receiver in radians.],
+  [`.cos()`], [Cosine of a self, with the receiver in radians.],
+  [`.tan()`], [Tangent of a self, with the receiver in radians.],
+  [`.asin()`], [Arcsine of a self, returning radians.],
+  [`.acos()`], [Arccosine of a self, returning radians.],
+  [`.atan()`], [Arctangent of a self, returning radians.],
+  [`.atan2(x)`], [Computes the four quadrant arctangent of y (self) and x in radians.],
+  [`.cot()`], [Cotangent of a self, with the receiver in radians.],
+  [`.sec()`], [Secant of a self, with the receiver in radians.],
+  [`.csc()`], [Cosecant of a self, with the receiver in radians.],
+  [`.degrees()`], [Convert radians to degrees.],
+  [`.radians()`], [Convert degrees to radians.],
+  [`.hypot(x)`], [Hypotenuse of a right-angled triangle with sides self and x.],
 )
+
+Logarithms must have positive and finite `self`s. Bases must be positive and not equal to 1. The input for `ln1p` must be greater than -1.
+
+`self` for `asin` and `acos` must be in the range $[-1, 1]$.
 
 Parentheses make numeric receivers clear: `(-3).abs()` and `(2.5).round()`. For float-to-integer results, the saturation and NaN conversion rules also apply to `.ceil()` and `.floor()`.
 

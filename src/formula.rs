@@ -1922,7 +1922,7 @@ impl FormulaEngine {
                 };
                 let expression: String = chars[index + 2..end].iter().collect();
                 let value = self.evaluate(&expression, env)?;
-                output.push_str(&value.repr());
+                output.push_str(&value.to_string());
                 index = end + 1;
                 continue;
             }
@@ -1942,7 +1942,7 @@ impl FormulaEngine {
                 return Err(Error::InvalidJoker);
             }
             if let Some(value) = env.get(&name) {
-                output.push_str(&value.repr());
+                output.push_str(&value.to_string());
             } else {
                 output.push('$');
                 output.push_str(&name);
@@ -2419,6 +2419,19 @@ impl FormulaEngine {
     }
 }
 
+/// Attempts to convert an i64 to f64, ensuring no precision loss.
+fn try_i64_to_f64(value: i64) -> Result<f64> {
+    // Max integer f64 can represent precisely is 2^53 - 1
+    const MAX_SAFE_INT: i64 = (1 << 53) - 1;
+    const MIN_SAFE_INT: i64 = -MAX_SAFE_INT;
+
+    if value >= MIN_SAFE_INT && value <= MAX_SAFE_INT {
+        Ok(value as f64)
+    } else {
+        Err(Error::Overflow("int unrepresentable as a float".into()))
+    }
+}
+
 /// Validates the number of arguments supplied to a formula function or method.
 fn expect_arity(name: &str, arguments: &[EvalValue], expected: usize) -> Result<()> {
     if arguments.len() != expected {
@@ -2452,8 +2465,16 @@ fn power_values(base: &EvalValue, exponent: &EvalValue) -> Result<EvalValue> {
         }
     }
 
-    let base = base.to_f64()?;
-    let exponent = exponent.to_f64()?;
+    let base = match base {
+        EvalValue::Int(value) => try_i64_to_f64(*value)?,
+        EvalValue::Float(value) => *value,
+        _ => bail!(Type, "pow base must be numeric"),
+    };
+    let exponent = match exponent {
+        EvalValue::Int(value) => try_i64_to_f64(*value)?,
+        EvalValue::Float(value) => *value,
+        _ => bail!(Type, "pow exponent must be numeric"),
+    };
     if base == 0.0 && exponent < 0.0 {
         bail!(NumericDomain, "pow cannot raise zero to a negative power")
     }
@@ -3190,15 +3211,6 @@ fn compare_values(left: &EvalValue, right: &EvalValue) -> Result<Ordering> {
             right.diagnostic()
         )
     })
-}
-
-/// Returns whether a value participates in Python-style numeric operations.
-#[allow(dead_code)]
-fn is_python_number(value: &EvalValue) -> bool {
-    matches!(
-        value,
-        EvalValue::Bool(_) | EvalValue::Int(_) | EvalValue::Float(_)
-    )
 }
 
 /// Tests membership using formula-language equality semantics.
@@ -5508,7 +5520,7 @@ pub mod builtins {
     use crate::formula::{
         expect_arity, expect_arity_between, full_formula, get_path, has_path, indexof_object, indexof_str, minmax,
         mul_values, normalize_index, pop_values, power_values, python_round, range_values, shuffle,
-        sum_values, zip_arrays, Env, EvalValue, FormulaEngine, Function,
+        sum_values, zip_arrays, Env, EvalValue, FormulaEngine, Function, try_i64_to_f64,
     };
     use crate::err::{bail, error, Error, Result, ResultContext};
     use indexmap::IndexMap;
@@ -5544,7 +5556,7 @@ use rand::{Rng, RngExt};
         build_env(&mut env, "max", max);
         build_env(&mut env, "abs", abs);
         build_env(&mut env, "pow", pow);
-        build_env(&mut env, "round", round);
+        build_env(&mut env, "round", number_round);
         build_env(&mut env, "str", fn_str);
         build_env(&mut env, "int", int);
         build_env(&mut env, "float", float);
@@ -5574,7 +5586,33 @@ use rand::{Rng, RngExt};
         build_env(&mut env, "order", order);
         build_env(&mut env, "try", fn_try);
         build_env(&mut env, "method", method);
-
+        build_env(&mut env, "pi", pi);
+        build_env(&mut env, "e", e);
+        build_env(&mut env, "isclose", isclose);
+        build_env(&mut env, "eps", eps);
+        build_env(&mut env, "log", log);
+        build_env(&mut env, "ln", ln);
+        build_env(&mut env, "log2", log2);
+        build_env(&mut env, "log10", log10);
+        build_env(&mut env, "exp", exp);
+        build_env(&mut env, "expm1", expm1);
+        build_env(&mut env, "ln1p", ln1p);
+        build_env(&mut env, "sin", sin);
+        build_env(&mut env, "cos", cos);
+        build_env(&mut env, "tan", tan);
+        build_env(&mut env, "asin", asin);
+        build_env(&mut env, "acos", acos);
+        build_env(&mut env, "atan", atan);
+        build_env(&mut env, "atan2", atan2);
+        build_env(&mut env, "sec", sec);
+        build_env(&mut env, "csc", csc);
+        build_env(&mut env, "cot", cot);
+        build_env(&mut env, "degrees", degrees);
+        build_env(&mut env, "radians", radians);
+        build_env(&mut env, "hypot", hypot);
+        build_env(&mut env, "sqrt", sqrt);
+        build_env(&mut env, "cbrt", cbrt);
+        build_env(&mut env, "genlist", genlist);
         env
     });
 
@@ -5630,25 +5668,6 @@ use rand::{Rng, RngExt};
     ) -> Result<EvalValue> {
         expect_arity("pow", &arguments, 2)?;
         power_values(&arguments[0], &arguments[1])
-    }
-    pub fn round(
-        arguments: &[EvalValue],
-        formula: &mut FormulaEngine,
-        env: &Env,
-    ) -> Result<EvalValue> {
-        expect_arity_between("round", arguments.len(), 1, 2)?;
-        let value = arguments[0].to_f64()?;
-        let digits = if arguments.len() == 2 {
-            arguments[1].to_i64()?
-        } else {
-            0
-        };
-        let rounded = python_round(value, digits)?;
-        if digits <= 0 {
-            Ok(EvalValue::Int(rounded as i64))
-        } else {
-            Ok(EvalValue::Float(rounded))
-        }
     }
     pub fn fn_str(
         arguments: &[EvalValue],
@@ -5919,7 +5938,6 @@ use rand::{Rng, RngExt};
         }
         
     }
-
     /// Look up a method on a value and returns it if found (null otherwise).
     /// Usefull in case a field in a dictionary shadows a registered method.
     pub fn method(
@@ -5943,50 +5961,538 @@ use rand::{Rng, RngExt};
         }
     }
 
+    /// Generates a list by calling a function for each index from 0 to n-1.
+    /// equiv to range(n).map(f), but avoid generating the whole range list in memory.
+    pub fn genlist(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("genlist", arguments, 2)?;
+        let n = match &arguments[0] {
+            EvalValue::Int(n) => *n as usize,
+            _ => bail!(Type, "genlist requires an integer as its first argument"),
+        };
+        let f = &arguments[1];
+
+        let mut list = Vec::with_capacity(n);
+        for i in 0..n {
+            list.push(f.clone().call(&[EvalValue::Int(i as i64)], formula, env)?);
+        }
+        Ok(EvalValue::Array(list.into()))
+    }
+
+    pub fn sin(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("sin", arguments, 1)?;
+        match &arguments[0] {
+            EvalValue::Int(n) => Ok(EvalValue::Float((*n as f64).sin())),
+            EvalValue::Float(n) => Ok(EvalValue::Float(n.sin())),
+            _ => bail!(Type, "sin requires a number as its argument"),
+        }
+    }
+    pub fn cos(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("cos", arguments, 1)?;
+        match &arguments[0] {
+            EvalValue::Int(n) => Ok(EvalValue::Float((*n as f64).cos())),
+            EvalValue::Float(n) => Ok(EvalValue::Float(n.cos())),
+            _ => bail!(Type, "cos requires a number as its argument"),
+        }
+    }
+    pub fn tan(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("tan", arguments, 1)?;
+        let res = match &arguments[0] {
+            EvalValue::Int(n) =>(*n as f64).tan(),
+            EvalValue::Float(n) => n.tan(),
+            _ => bail!(Type, "tan requires a number as its argument"),
+        };
+        if !res.is_finite() {
+            return Err(Error::InvalidArgument("tan argument resulted in non-finite value".into()));
+        }
+        Ok(EvalValue::Float(res))
+    }
+    pub fn cot(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("cot", arguments, 1)?;
+        let res = match &arguments[0] {
+            EvalValue::Int(n) => {
+                let n = *n as f64;
+                n.cos() / n.sin()
+            },
+            EvalValue::Float(n) => n.cos() / n.sin(),
+            _ => bail!(Type, "cot requires a number as its argument"),
+        };
+        if !res.is_finite() {
+            return Err(Error::InvalidArgument("cot argument resulted in non-finite value".into()));
+        }
+        Ok(EvalValue::Float(res))
+    }
+    pub fn asin(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("asin", arguments, 1)?;
+        let x = match &arguments[0] {
+            EvalValue::Int(n) => *n as f64,
+            EvalValue::Float(n) => *n,
+            _ => bail!(Type, "asin requires a number as its argument"),
+        };
+        if x < -1.0 || x > 1.0 {
+            return Err(Error::InvalidArgument("asin argument out of range".into()));
+        }
+        Ok(EvalValue::Float(x.asin()))
+    }
+    pub fn acos(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("acos", arguments, 1)?;
+        let x = match &arguments[0] {
+            EvalValue::Int(n) => *n as f64,
+            EvalValue::Float(n) => *n,
+            _ => bail!(Type, "acos requires a number as its argument"),
+        };
+        if x < -1.0 || x > 1.0 {
+            return Err(Error::InvalidArgument("acos argument out of range".into()));
+        }
+        Ok(EvalValue::Float(x.acos()))
+    }
+    pub fn atan(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("atan", arguments, 1)?;
+        match &arguments[0] {
+            EvalValue::Int(n) => Ok(EvalValue::Float((*n as f64).atan())),
+            EvalValue::Float(n) => Ok(EvalValue::Float(n.atan())),
+            _ => bail!(Type, "atan requires a number as its argument"),
+        }
+    }
+    pub fn atan2(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("atan2", arguments, 2)?;
+        let x = match &arguments[1] {
+            EvalValue::Int(n) => *n as f64,
+            EvalValue::Float(n) => *n,
+            _ => bail!(Type, "atan2 requires numbers as its arguments"),
+        };
+        let y = match &arguments[0] {
+            EvalValue::Int(n) => *n as f64,
+            EvalValue::Float(n) => *n,
+            _ => bail!(Type, "atan2 requires numbers as its arguments"),
+        };
+        Ok(EvalValue::Float(y.atan2(x)))
+    }
+    pub fn sec(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("sec", arguments, 1)?;
+        let x = match &arguments[0] {
+            EvalValue::Int(n) => *n as f64,
+            EvalValue::Float(n) => *n,
+            _ => bail!(Type, "sec requires a number as its argument"),
+        };
+        if !x.is_finite() {
+            return Err(Error::InvalidArgument("sec argument must be a finite number".into()));
+        }
+        // error or nan when cos(x) is zero?
+        Ok(EvalValue::Float(1.0 / x.cos()))
+    }
+    pub fn csc(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("csc", arguments, 1)?;
+        let x = match &arguments[0] {
+            EvalValue::Int(n) => *n as f64,
+            EvalValue::Float(n) => *n,
+            _ => bail!(Type, "csc requires a number as its argument"),
+        };
+        if !x.is_finite() {
+            return Err(Error::InvalidArgument("csc argument must be a finite number".into()));
+        }
+        // error or nan when sin(x) is zero?
+        Ok(EvalValue::Float(1.0 / x.sin()))
+    }
+    pub fn pi(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("pi", arguments, 0)?;
+        Ok(EvalValue::Float(std::f64::consts::PI))
+    }
+    pub fn e(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("e", arguments, 0)?;
+        Ok(EvalValue::Float(std::f64::consts::E))
+    }
+    pub fn eps(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("eps", arguments, 0)?;
+        Ok(EvalValue::Float(f64::EPSILON))
+    }
+    pub fn radians(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("radians", arguments, 1)?;
+        let x = match &arguments[0] {
+            EvalValue::Int(n) => *n as f64,
+            EvalValue::Float(n) => *n,
+            _ => bail!(Type, "radians requires a number as its argument"),
+        };
+        if !x.is_finite() {
+            return Err(Error::InvalidArgument("radians argument must be a finite number".into()));
+        }
+        Ok(EvalValue::Float(x.to_radians()))
+    }
+    pub fn degrees(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("degrees", arguments, 1)?;
+        let x = match &arguments[0] {
+            EvalValue::Int(n) => *n as f64,
+            EvalValue::Float(n) => *n,
+            _ => bail!(Type, "degrees requires a number as its argument"),
+        };
+        if !x.is_finite() {
+            return Err(Error::InvalidArgument("degrees argument must be a finite number".into()));
+        }
+        Ok(EvalValue::Float(x.to_degrees()))
+    }
+    pub fn hypot(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("hypot", arguments, 2)?;
+        let x = match &arguments[0] {
+            EvalValue::Float(f) => *f,
+            EvalValue::Int(i) => *i as f64,
+            _ => bail!(Type, "hypot requires numbers as its arguments"),
+        };
+        let y = match &arguments[1] {
+            EvalValue::Float(f) => *f,
+            EvalValue::Int(i) => *i as f64,
+            _ => bail!(Type, "hypot requires numbers as its arguments"),
+        };
+        Ok(EvalValue::Float(x.hypot(y)))
+    }
+    pub fn log(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("log", arguments, 2)?;
+        let x = match &arguments[0] {
+            EvalValue::Int(n) => *n as f64,
+            EvalValue::Float(n) => *n,
+            _ => bail!(Type, "log requires numbers as its arguments"),
+        };
+        let base = match &arguments[1] {
+            EvalValue::Int(n) => *n as f64,
+            EvalValue::Float(n) => *n,
+            _ => bail!(Type, "log requires numbers as its arguments"),
+        };
+        if !x.is_finite() || !base.is_finite() {
+            return Err(Error::InvalidArgument("log arguments must be finite numbers".into()));
+        }
+        if x <= 0.0 || base <= 0.0 {
+            return Err(Error::InvalidArgument("log arguments must be positive".into()));
+        }
+        if base == 1.0 {
+            return Err(Error::InvalidArgument("log base must not be 1".into()));
+        }
+        Ok(EvalValue::Float(x.log(base)))
+    }
+    pub fn ln(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("ln", arguments, 1)?;
+        let x = match &arguments[0] {
+            EvalValue::Int(n) => *n as f64,
+            EvalValue::Float(n) => *n,
+            _ => bail!(Type, "ln requires a number as its argument"),
+        };
+        if !x.is_finite() {
+            return Err(Error::InvalidArgument("ln argument must be a finite number".into()));
+        }
+        if x <= 0.0 {
+            return Err(Error::InvalidArgument("ln argument must be positive".into()));
+        }
+        Ok(EvalValue::Float(x.ln()))
+    }
+    pub fn log2(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("log2", arguments, 1)?;
+        let x = match &arguments[0] {
+            EvalValue::Int(n) => *n as f64,
+            EvalValue::Float(n) => *n,
+            _ => bail!(Type, "log2 requires a number as its argument"),
+        };
+        if !x.is_finite() {
+            return Err(Error::InvalidArgument("log2 argument must be a finite number".into()));
+        }
+        if x <= 0.0 {
+            return Err(Error::InvalidArgument("log2 argument must be positive".into()));
+        }
+        Ok(EvalValue::Float(x.log2()))
+    }
+    pub fn log10(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("log10", arguments, 1)?;
+        let x = match &arguments[0] {
+            EvalValue::Int(n) => *n as f64,
+            EvalValue::Float(n) => *n,
+            _ => bail!(Type, "log10 requires a number as its argument"),
+        };
+        if !x.is_finite() {
+            return Err(Error::InvalidArgument("log10 argument must be a finite number".into()));
+        }
+        if x <= 0.0 {
+            return Err(Error::InvalidArgument("log10 argument must be positive".into()));
+        }
+        Ok(EvalValue::Float(x.log10()))
+    }
+    pub fn exp(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("exp", arguments, 1)?;
+        let x = match &arguments[0] {
+            EvalValue::Int(n) => *n as f64,
+            EvalValue::Float(n) => *n,
+            _ => bail!(Type, "exp requires a number as its argument"),
+        };
+        if !x.is_finite() {
+            return Err(Error::InvalidArgument("exp argument must be a finite number".into()));
+        }
+        Ok(EvalValue::Float(x.exp()))
+    }
+    pub fn expm1(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("expm1", arguments, 1)?;
+        let x = match &arguments[0] {
+            EvalValue::Int(n) => *n as f64,
+            EvalValue::Float(n) => *n,
+            _ => bail!(Type, "expm1 requires a number as its argument"),
+        };
+        if !x.is_finite() {
+            return Err(Error::InvalidArgument("expm1 argument must be a finite number".into()));
+        }
+        Ok(EvalValue::Float(x.exp_m1()))
+    }
+    pub fn ln1p(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("ln1p", arguments, 1)?;
+        let x = match &arguments[0] {
+            EvalValue::Int(n) => *n as f64,
+            EvalValue::Float(n) => *n,
+            _ => bail!(Type, "ln1p requires a number as its argument"),
+        };
+        if !x.is_finite() {
+            return Err(Error::InvalidArgument("ln1p argument must be a finite number".into()));
+        }
+        if x <= -1.0 {
+            return Err(Error::InvalidArgument("ln1p argument must be greater than -1".into()));
+        }
+        Ok(EvalValue::Float(x.ln_1p()))
+    }
+    pub fn sqrt(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("sqrt", arguments, 1)?;
+        let x = match &arguments[0] {
+            EvalValue::Int(n) => *n as f64,
+            EvalValue::Float(n) => *n,
+            _ => bail!(Type, "sqrt requires a number as its argument"),
+        };
+        if !x.is_finite() {
+            return Err(Error::InvalidArgument("sqrt argument must be a finite number".into()));
+        }
+        if x < 0.0 {
+            return Err(Error::InvalidArgument("sqrt argument must be non-negative".into()));
+        }
+        Ok(EvalValue::Float(x.sqrt()))
+    }
+    pub fn cbrt(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("cbrt", arguments, 1)?;
+        let x = match &arguments[0] {
+            EvalValue::Int(n) => *n as f64,
+            EvalValue::Float(n) => *n,
+            _ => bail!(Type, "cbrt requires a number as its argument"),
+        };
+        if !x.is_finite() {
+            return Err(Error::InvalidArgument("cbrt argument must be a finite number".into()));
+        }
+        Ok(EvalValue::Float(x.cbrt()))
+    }
+    pub fn isclose(
+        arguments: &[EvalValue],
+        formula: &mut FormulaEngine,
+        env: &Env,
+    ) -> Result<EvalValue> {
+        if arguments.len() < 2 || arguments.len() > 4 {
+            return Err(Error::Arity { function: "isclose".into(), expected: crate::err::ArgumentCount::Between { min: 2, max: 4 }, actual: arguments.len() });
+        }
+        let a = match &arguments[0] {
+            EvalValue::Int(n) => *n as f64,
+            EvalValue::Float(n) => *n,
+            _ => bail!(Type, "isclose requires numbers as its arguments"),
+        };
+        let b = match &arguments[1] {
+            EvalValue::Int(n) => *n as f64,
+            EvalValue::Float(n) => *n,
+            _ => bail!(Type, "isclose requires numbers as its arguments"),
+        };
+        let rel_tol = if arguments.len() > 2 {
+            match &arguments[2] {
+                EvalValue::Int(n) => *n as f64,
+                EvalValue::Float(n) => *n,
+                EvalValue::Null => 1e-9,
+                _ => bail!(Type, "isclose requires numbers as its arguments"),
+            }
+        } else {
+            1e-9
+        };
+        let abs_tol = if arguments.len() > 3 {
+            match &arguments[3] {
+                EvalValue::Int(n) => *n as f64,
+                EvalValue::Float(n) => *n,
+                EvalValue::Null => 0.0,
+                _ => bail!(Type, "isclose requires numbers as its arguments"),
+            }
+        } else {
+            0.0
+        };
+        
+        // Includes matching infinities and positive/negative zero.
+        if a == b {
+            return Ok(EvalValue::Bool(true));
+        }
+
+        // Unequal infinities cannot be close.
+        if a.is_infinite() || b.is_infinite() {
+            return Ok(EvalValue::Bool(false));
+        }
+
+        if a.is_nan() || b.is_nan() {
+            return Ok(EvalValue::Bool(false));
+        }
+
+        if rel_tol.is_nan() {
+            bail!(InvalidArgument, "isclose requires non-NaN relative tolerance");
+        }
+        if abs_tol.is_nan() {
+            bail!(InvalidArgument, "isclose requires non-NaN absolute tolerance");
+        }
+
+        let diff = (a - b).abs();
+        Ok(EvalValue::Bool(
+            diff <= (rel_tol * a).abs()
+                || diff <= (rel_tol * b).abs()
+                || diff <= abs_tol
+        ))
+    }
+
     ////// ARRAY METHODS \\\\\\\
-        pub static ARRAY_METHODS: Lazy<IndexMap<Arc<str>, EvalValue>> = Lazy::new(|| {
-            let mut map = IndexMap::new();
-            build_dict(&mut map, "list", "sum", array_sum);
-            build_dict(&mut map, "list", "mul", array_mul);
-            build_dict(&mut map, "list", "indexof", array_indexof);
-            build_dict(&mut map, "list", "enum", array_enum);
-            build_dict(&mut map, "list", "flatten", array_flatten);
-            build_dict(&mut map, "list", "flat", array_flat);
-            build_dict(&mut map, "list", "len", array_len);
-            build_dict(&mut map, "list", "unique", array_unique);
-            build_dict(&mut map, "list", "sort", array_sort);
-            build_dict(&mut map, "list", "sortby", array_sort_by);
-            build_dict(&mut map, "list", "minby", array_min_by);
-            build_dict(&mut map, "list", "maxby", array_max_by);
-            build_dict(&mut map, "list", "extremeby", array_extreme_by);
-            build_dict(&mut map, "list", "groupby", array_group_by);
-            build_dict(&mut map, "list", "reverse", array_reverse);
-            build_dict(&mut map, "list", "take", array_take);
-            build_dict(&mut map, "list", "skip", array_skip);
-            build_dict(&mut map, "list", "slice", array_slice);
-            build_dict(&mut map, "list", "chunks", array_chunks);
-            build_dict(&mut map, "list", "windows", array_windows);
-            build_dict(&mut map, "list", "all", array_all);
-            build_dict(&mut map, "list", "any", array_any);
-            build_dict(&mut map, "list", "join", array_join);
-            build_dict(&mut map, "list", "choice", array_choice);
-            build_dict(&mut map, "list", "weighted", array_weighted);
-            build_dict(&mut map, "list", "shuffle", array_shuffle);
-            build_dict(&mut map, "list", "coalesce", array_coalesce);
-            build_dict(&mut map, "list", "tryget", array_tryget);
-            build_dict(&mut map, "list", "pop", array_pop);
-            build_dict(&mut map, "list", "map", array_map);
-            build_dict(&mut map, "list", "filter", array_filter);
-            build_dict(&mut map, "list", "drop", array_drop);
-            build_dict(&mut map, "list", "cumul", array_cumul);
-            build_dict(&mut map, "list", "reduce", array_reduce);
-            build_dict(&mut map, "list", "apply", array_apply);
-            build_dict(&mut map, "list", "find", array_find);
-            build_dict(&mut map, "list", "fmt", array_fmt);
-            build_dict(&mut map, "list", "max", array_max);
-            build_dict(&mut map, "list", "min", array_min);
-            map
-        });
+    pub static ARRAY_METHODS: Lazy<IndexMap<Arc<str>, EvalValue>> = Lazy::new(|| {
+        let mut map = IndexMap::new();
+        build_dict(&mut map, "list", "sum", array_sum);
+        build_dict(&mut map, "list", "mul", array_mul);
+        build_dict(&mut map, "list", "indexof", array_indexof);
+        build_dict(&mut map, "list", "enum", array_enum);
+        build_dict(&mut map, "list", "flatten", array_flatten);
+        build_dict(&mut map, "list", "flat", array_flat);
+        build_dict(&mut map, "list", "len", array_len);
+        build_dict(&mut map, "list", "unique", array_unique);
+        build_dict(&mut map, "list", "sort", array_sort);
+        build_dict(&mut map, "list", "sortby", array_sort_by);
+        build_dict(&mut map, "list", "minby", array_min_by);
+        build_dict(&mut map, "list", "maxby", array_max_by);
+        build_dict(&mut map, "list", "extremeby", array_extreme_by);
+        build_dict(&mut map, "list", "groupby", array_group_by);
+        build_dict(&mut map, "list", "reverse", array_reverse);
+        build_dict(&mut map, "list", "take", array_take);
+        build_dict(&mut map, "list", "skip", array_skip);
+        build_dict(&mut map, "list", "slice", array_slice);
+        build_dict(&mut map, "list", "chunks", array_chunks);
+        build_dict(&mut map, "list", "windows", array_windows);
+        build_dict(&mut map, "list", "all", array_all);
+        build_dict(&mut map, "list", "any", array_any);
+        build_dict(&mut map, "list", "join", array_join);
+        build_dict(&mut map, "list", "choice", array_choice);
+        build_dict(&mut map, "list", "weighted", array_weighted);
+        build_dict(&mut map, "list", "shuffle", array_shuffle);
+        build_dict(&mut map, "list", "coalesce", array_coalesce);
+        build_dict(&mut map, "list", "tryget", array_tryget);
+        build_dict(&mut map, "list", "pop", array_pop);
+        build_dict(&mut map, "list", "map", array_map);
+        build_dict(&mut map, "list", "filter", array_filter);
+        build_dict(&mut map, "list", "drop", array_drop);
+        build_dict(&mut map, "list", "cumul", array_cumul);
+        build_dict(&mut map, "list", "reduce", array_reduce);
+        build_dict(&mut map, "list", "apply", array_apply);
+        build_dict(&mut map, "list", "find", array_find);
+        build_dict(&mut map, "list", "fmt", array_fmt);
+        build_dict(&mut map, "list", "max", array_max);
+        build_dict(&mut map, "list", "min", array_min);
+        map
+    });
 
     pub fn array_sum(
         arguments: &[EvalValue],
@@ -6820,7 +7326,7 @@ use rand::{Rng, RngExt};
         for value in values.iter() {
             let formatted_value = match value {
                 EvalValue::Func(_) => value.clone().call(&[], formula, env)?.repr(),
-                _ => value.repr(),
+                _ => value.to_string().into(),
             };
             formatted.push(formatted_value);
         }
@@ -7338,34 +7844,92 @@ use rand::{Rng, RngExt};
     //////// NUMBER METHODS \\\\\\\
     pub static INT_METHODS: Lazy<IndexMap<Arc<str>, EvalValue>> = Lazy::new(|| {
         let mut map = IndexMap::new();
-        build_dict(&mut map, "int", "abs", int_abs);
-        build_dict(&mut map, "int", "pow", int_pow);
-        build_dict(&mut map, "int", "clamp", int_clamp);
-        build_dict(&mut map, "int", "sign", int_sign);
-        build_dict(&mut map, "int", "lerp", int_lerp);
+        build_dict(&mut map, "int", "abs", number_abs);
+        build_dict(&mut map, "int", "pow", number_pow);
+        build_dict(&mut map, "int", "clamp", number_clamp);
+        build_dict(&mut map, "int", "round", number_round);
+        build_dict(&mut map, "int", "ceil", number_ceil);
+        build_dict(&mut map, "int", "floor", number_floor);
+        build_dict(&mut map, "int", "sign", number_sign);
+        build_dict(&mut map, "int", "lerp", number_lerp);
         build_dict(&mut map, "int", "divmod", int_divmod);
         build_dict(&mut map, "int", "tdivmod", int_tdivmod);
         build_dict(&mut map, "int", "max", max);
         build_dict(&mut map, "int", "min", min);
         build_dict(&mut map, "int", "rotr", int_rotr);
         build_dict(&mut map, "int", "rotl", int_rotl);
+        build_dict(&mut map, "int", "bits", number_bits);
+        build_dict(&mut map, "int", "log", log);
+        build_dict(&mut map, "int", "ln", ln);
+        build_dict(&mut map, "int", "exp", exp);
+        build_dict(&mut map, "int", "log2", log2);
+        build_dict(&mut map, "int", "log10", log10);
+        build_dict(&mut map, "int", "expm1", expm1);
+        build_dict(&mut map, "int", "ln1p", ln1p);
+        build_dict(&mut map, "int", "sin", sin);
+        build_dict(&mut map, "int", "cos", cos);
+        build_dict(&mut map, "int", "tan", tan);
+        build_dict(&mut map, "int", "asin", asin);
+        build_dict(&mut map, "int", "acos", acos);
+        build_dict(&mut map, "int", "atan", atan);
+        build_dict(&mut map, "int", "atan2", atan2);
+        build_dict(&mut map, "int", "sec", sec);
+        build_dict(&mut map, "int", "csc", csc);
+        build_dict(&mut map, "int", "cot", cot);
+        build_dict(&mut map, "int", "sqrt", sqrt);
+        build_dict(&mut map, "int", "cbrt", cbrt);
+        build_dict(&mut map, "int", "hypot", hypot);
+        build_dict(&mut map, "int", "degrees", degrees);
+        build_dict(&mut map, "int", "radians", radians);
+        build_dict(&mut map, "int", "isnan", number_isnan);
+        build_dict(&mut map, "int", "isinf", number_isinf);
+        build_dict(&mut map, "int", "isfin", number_isfin);
+        build_dict(&mut map, "int", "trunc", number_trunc);
+        build_dict(&mut map, "int", "fract", number_fract);
+        build_dict(&mut map, "int", "isclose", isclose);
         map
     });
     pub static FLOAT_METHODS: Lazy<IndexMap<Arc<str>, EvalValue>> = Lazy::new(|| {
         let mut map = IndexMap::new();
-        build_dict(&mut map, "float", "round", float_round);
-        build_dict(&mut map, "float",  "abs", float_abs);
-        build_dict(&mut map, "float", "pow", float_pow);
-        build_dict(&mut map, "float", "ceil", float_ceil);
-        build_dict(&mut map, "float", "floor", float_floor);
-        build_dict(&mut map, "float", "clamp", float_clamp);
-        build_dict(&mut map, "float", "sign", float_sign);
-        build_dict(&mut map, "float", "lerp", float_lerp);
+        build_dict(&mut map, "float", "round", number_round);
+        build_dict(&mut map, "float",  "abs", number_abs);
+        build_dict(&mut map, "float", "pow", number_pow);
+        build_dict(&mut map, "float", "ceil", number_ceil);
+        build_dict(&mut map, "float", "floor", number_floor);
+        build_dict(&mut map, "float", "clamp", number_clamp);
+        build_dict(&mut map, "float", "sign", number_sign);
+        build_dict(&mut map, "float", "lerp", number_lerp);
         build_dict(&mut map, "float", "max", max);
         build_dict(&mut map, "float", "min", min);
-        build_dict(&mut map, "float", "bits", float_bits);
-        build_dict(&mut map, "float", "isnan", float_isnan);
-        build_dict(&mut map, "float", "isinf", float_isinf);
+        build_dict(&mut map, "float", "bits", number_bits);
+        build_dict(&mut map, "float", "isnan", number_isnan);
+        build_dict(&mut map, "float", "isinf", number_isinf);
+        build_dict(&mut map, "float", "log", log);
+        build_dict(&mut map, "float", "ln", ln);
+        build_dict(&mut map, "float", "exp", exp);
+        build_dict(&mut map, "float", "log2", log2);
+        build_dict(&mut map, "float", "log10", log10);
+        build_dict(&mut map, "float", "expm1", expm1);
+        build_dict(&mut map, "float", "ln1p", ln1p);
+        build_dict(&mut map, "float", "sqrt", sqrt);
+        build_dict(&mut map, "float", "cbrt", cbrt);
+        build_dict(&mut map, "float", "hypot", hypot);
+        build_dict(&mut map, "float", "sin", sin);
+        build_dict(&mut map, "float", "cos", cos);
+        build_dict(&mut map, "float", "tan", tan);
+        build_dict(&mut map, "float", "asin", asin);
+        build_dict(&mut map, "float", "acos", acos);
+        build_dict(&mut map, "float", "atan", atan);
+        build_dict(&mut map, "float", "atan2", atan2);
+        build_dict(&mut map, "float", "sec", sec);
+        build_dict(&mut map, "float", "csc", csc);
+        build_dict(&mut map, "float", "cot", cot);
+        build_dict(&mut map, "float", "degrees", degrees);
+        build_dict(&mut map, "float", "radians", radians);
+        build_dict(&mut map, "float", "isfin", number_isfin);
+        build_dict(&mut map, "float", "trunc", number_trunc);
+        build_dict(&mut map, "float", "fract", number_fract);
+        build_dict(&mut map, "float", "isclose", isclose);
         map
     });
 
@@ -7383,15 +7947,134 @@ use rand::{Rng, RngExt};
         }
     }
 
-    pub fn int_abs(
+    pub fn number_abs(
         arguments: &[EvalValue],
         _formula: &mut FormulaEngine,
         _env: &Env,
     ) -> Result<EvalValue> {
         expect_arity("abs", arguments, 1)?;
-        Ok(EvalValue::Int(int_argument("abs", arguments)?.checked_abs().ok_or_else(|| Error::Overflow("Integer absolute value overflow".into()))?))
+        match &arguments[0] {
+            EvalValue::Int(value) => Ok(EvalValue::Int(value.checked_abs().ok_or_else(|| Error::Overflow("Integer absolute value overflow".into()))?)),
+            EvalValue::Float(value) => Ok(EvalValue::Float(value.abs())),
+            _ => bail!(Type, "abs requires a number as its first argument"),
+        }
     }
-    pub fn int_pow(
+    pub fn number_sign(
+        arguments: &[EvalValue],
+        _formula: &mut FormulaEngine,
+        _env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("sign", arguments, 1)?;
+        match &arguments[0] {
+            EvalValue::Int(value) => Ok(EvalValue::Int(value.signum())),
+            EvalValue::Float(value) => Ok(EvalValue::Int(value.signum() as i64)),
+            _ => bail!(Type, "sign requires a number as its first argument"),
+        }
+    }
+
+    pub fn number_clamp(
+        arguments: &[EvalValue],
+        _formula: &mut FormulaEngine,
+        _env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("clamp", arguments, 3)?;
+        match (&arguments[0], &arguments[1], &arguments[2]) {
+            (EvalValue::Int(val), EvalValue::Int(min), EvalValue::Int(max)) => {
+                let (min, max) = (*min.min(max), *min.max(max));
+                Ok(EvalValue::Int((*val).clamp(min, max)))
+            }
+            (EvalValue::Float(val), EvalValue::Float(min), EvalValue::Float(max)) => {
+                let (min, max) = (min.min(*max), min.max(*max));
+                if val.is_nan() || min.is_nan() || max.is_nan() {
+                    bail!(InvalidArgument, "clamp requires non-NaN bounds and value")
+                }
+                Ok(EvalValue::Float((*val).clamp(min, max)))
+            }
+            (EvalValue::Float(val), EvalValue::Int(min), EvalValue::Int(max)) => {
+                let min = try_i64_to_f64(*min)?;
+                let max = try_i64_to_f64(*max)?;
+                let (min, max) = (min.min(max), min.max(max));
+                if val.is_nan() || min.is_nan() || max.is_nan() {
+                    bail!(InvalidArgument, "clamp requires non-NaN bounds and value")
+                }
+                Ok(EvalValue::Float((*val).clamp(min, max)))
+            }
+            (EvalValue::Int(val), EvalValue::Float(min), EvalValue::Int(max)) => {
+                let val = try_i64_to_f64(*val)?;
+                let min = *min;
+                let max = try_i64_to_f64(*max)?;
+                let (min, max) = (min.min(max), min.max(max));
+                if val.is_nan() || min.is_nan() || max.is_nan() {
+                    bail!(InvalidArgument, "clamp requires non-NaN bounds and value")
+                }
+                Ok(EvalValue::Float(val.clamp(min, max)))
+            },
+            (EvalValue::Int(val), EvalValue::Int(min), EvalValue::Float(max)) => {
+                let val = try_i64_to_f64(*val)?;
+                let min = try_i64_to_f64(*min)?;
+                let max = *max;
+                let (min, max) = (min.min(max), min.max(max));
+                if val.is_nan() || min.is_nan() || max.is_nan() {
+                    bail!(InvalidArgument, "clamp requires non-NaN bounds and value")
+                }
+                Ok(EvalValue::Float(val.clamp(min, max)))
+            },
+            (EvalValue::Float(val), EvalValue::Float(min), EvalValue::Int(max)) => {
+                let min = *min;
+                let max = try_i64_to_f64(*max)?;
+                let (min, max) = (min.min(max), min.max(max));
+                if val.is_nan() || min.is_nan() || max.is_nan() {
+                    bail!(InvalidArgument, "clamp requires non-NaN bounds and value")
+                }
+                Ok(EvalValue::Float((*val).clamp(min, max)))
+            },
+            (EvalValue::Float(val), EvalValue::Int(min), EvalValue::Float(max)) => {
+                let min = try_i64_to_f64(*min)?;
+                let max = *max;
+                let (min, max) = (min.min(max), min.max(max));
+                if val.is_nan() || min.is_nan() || max.is_nan() {
+                    bail!(InvalidArgument, "clamp requires non-NaN bounds and value")
+                }
+                Ok(EvalValue::Float((*val).clamp(min, max)))
+            },
+            (EvalValue::Int(val), EvalValue::Float(min), EvalValue::Float(max)) => {
+                let val = try_i64_to_f64(*val)?;
+                let min = *min;
+                let max = *max;
+                let (min, max) = (min.min(max), min.max(max));
+                if min.is_nan() || max.is_nan() {
+                    bail!(InvalidArgument, "clamp requires non-NaN bounds and value")
+                }
+                Ok(EvalValue::Float(val.clamp(min, max)))
+            },
+            _ => bail!(Type, "clamp requires a numbers as arguments"),
+        }
+    }
+    pub fn number_lerp(
+        arguments: &[EvalValue],
+        _formula: &mut FormulaEngine,
+        _env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("lerp", arguments, 3)?;
+        let factor = match &arguments[0] {
+            EvalValue::Int(val) => try_i64_to_f64(*val)?,
+            EvalValue::Float(val) => *val,
+            _ => bail!(Type, "lerp requires a number as the first argument"),
+        };
+        let start = match &arguments[1] {
+            EvalValue::Int(val) => try_i64_to_f64(*val)?,
+            EvalValue::Float(val) => *val,
+            _ => bail!(Type, "lerp requires a number as the second argument"),
+        };
+        let end = match &arguments[2] {
+            EvalValue::Int(val) => try_i64_to_f64(*val)?,
+            EvalValue::Float(val) => *val,
+            _ => bail!(Type, "lerp requires a number as the third argument"),
+        };
+        Ok(EvalValue::Float(start + (end - start) * factor))
+    }
+
+    pub fn number_pow(
         arguments: &[EvalValue],
         _formula: &mut FormulaEngine,
         _env: &Env,
@@ -7399,39 +8082,7 @@ use rand::{Rng, RngExt};
         expect_arity("pow", arguments, 2)?;
         power_values(&arguments[0], &arguments[1])
     }
-    pub fn int_clamp(
-        arguments: &[EvalValue],
-        _formula: &mut FormulaEngine,
-        _env: &Env,
-    ) -> Result<EvalValue> {
-        expect_arity("clamp", arguments, 3)?;
-        let value = int_argument("clamp", arguments)?;
-        let minimum = arguments[1].to_i64()?;
-        let maximum = arguments[2].to_i64()?;
-        if minimum > maximum {
-            bail!(InvalidArgument, "clamp requires a minimum bound less than or equal to the maximum bound")
-        }
-        Ok(EvalValue::Int(value.clamp(minimum, maximum)))
-    }
-    pub fn int_sign(
-        arguments: &[EvalValue],
-        _formula: &mut FormulaEngine,
-        _env: &Env,
-    ) -> Result<EvalValue> {
-        expect_arity("sign", arguments, 1)?;
-        Ok(EvalValue::Int(int_argument("sign", arguments)?.signum()))
-    }
-    pub fn int_lerp(
-        arguments: &[EvalValue],
-        _formula: &mut FormulaEngine,
-        _env: &Env,
-    ) -> Result<EvalValue> {
-        expect_arity("lerp", arguments, 3)?;
-        let factor = int_argument("lerp", arguments)? as f64;
-        let start = arguments[1].to_f64()?;
-        let end = arguments[2].to_f64()?;
-        Ok(EvalValue::Float(start + (end - start) * factor))
-    }
+
     pub fn int_divmod(
         arguments: &[EvalValue],
         _formula: &mut FormulaEngine,
@@ -7516,13 +8167,17 @@ use rand::{Rng, RngExt};
         Ok(EvalValue::Int(result))
     }
 
-    pub fn float_round(
+    pub fn number_round(
         arguments: &[EvalValue],
         _formula: &mut FormulaEngine,
         _env: &Env,
     ) -> Result<EvalValue> {
         expect_arity_between("round", arguments.len(), 1, 2)?;
-        let value = float_argument("round", arguments)?;
+        let value = match &arguments[0] {
+            EvalValue::Int(i) => return Ok(EvalValue::Float(*i as f64)),
+            EvalValue::Float(f) => *f,
+            _ => bail!(Type, "round requires a numeric value"),
+        };
         let digits = arguments
             .get(1)
             .map(EvalValue::to_i64)
@@ -7535,104 +8190,108 @@ use rand::{Rng, RngExt};
             Ok(EvalValue::Float(rounded))
         }
     }
-    pub fn float_abs(
-        arguments: &[EvalValue],
-        _formula: &mut FormulaEngine,
-        _env: &Env,
-    ) -> Result<EvalValue> {
-        expect_arity("abs", arguments, 1)?;
-        Ok(EvalValue::Float(float_argument("abs", arguments)?.abs()))
-    }
-    pub fn float_pow(
-        arguments: &[EvalValue],
-        _formula: &mut FormulaEngine,
-        _env: &Env,
-    ) -> Result<EvalValue> {
-        expect_arity("pow", arguments, 2)?;
-        power_values(&arguments[0], &arguments[1])
-    }
-    pub fn float_ceil(
+    pub fn number_ceil(
         arguments: &[EvalValue],
         _formula: &mut FormulaEngine,
         _env: &Env,
     ) -> Result<EvalValue> {
         expect_arity("ceil", arguments, 1)?;
+        if let EvalValue::Int(i) = &arguments[0] {
+            return Ok(EvalValue::Int(*i));
+        }
         Ok(EvalValue::Int(
             float_argument("ceil", arguments)?.ceil() as i64
         ))
     }
-    pub fn float_floor(
+    pub fn number_floor(
         arguments: &[EvalValue],
         _formula: &mut FormulaEngine,
         _env: &Env,
     ) -> Result<EvalValue> {
         expect_arity("floor", arguments, 1)?;
+        if let EvalValue::Int(i) = &arguments[0] {
+            return Ok(EvalValue::Int(*i));
+        }
         Ok(EvalValue::Int(
             float_argument("floor", arguments)?.floor() as i64
         ))
     }
-    pub fn float_clamp(
-        arguments: &[EvalValue],
-        _formula: &mut FormulaEngine,
-        _env: &Env,
-    ) -> Result<EvalValue> {
-        expect_arity("clamp", arguments, 3)?;
-        let value = float_argument("clamp", arguments)?;
-        let mut minimum = arguments[1].to_f64()?;
-        let mut maximum = arguments[2].to_f64()?;
-        if minimum.is_nan() || maximum.is_nan() {
-            bail!(InvalidArgument, "clamp requires non-NaN bounds");
-        }
-        if minimum > maximum {
-            std::mem::swap(&mut minimum, &mut maximum);
-        }
-        Ok(EvalValue::Float(value.clamp(minimum, maximum)))
-    }
-    pub fn float_sign(
-        arguments: &[EvalValue],
-        _formula: &mut FormulaEngine,
-        _env: &Env,
-    ) -> Result<EvalValue> {
-        expect_arity("sign", arguments, 1)?;
-        Ok(EvalValue::Int(
-            float_argument("sign", arguments)?.signum() as i64
-        ))
-    }
-    pub fn float_lerp(
-        arguments: &[EvalValue],
-        _formula: &mut FormulaEngine,
-        _env: &Env,
-    ) -> Result<EvalValue> {
-        expect_arity("lerp", arguments, 3)?;
-        let factor = float_argument("lerp", arguments)?;
-        let start = arguments[1].to_f64()?;
-        let end = arguments[2].to_f64()?;
-        Ok(EvalValue::Float(start + (end - start) * factor))
-    }
-    pub fn float_bits(
+    pub fn number_bits(
         arguments: &[EvalValue],
         _formula: &mut FormulaEngine,
         _env: &Env,
     ) -> Result<EvalValue> {
         expect_arity("bits", arguments, 1)?;
+        if let EvalValue::Int(i) = &arguments[0] {
+            return Ok(EvalValue::Int(*i));
+        }
         let value = float_argument("bits", arguments)?;
         Ok(EvalValue::Int(value.to_bits() as i64))
     }
-    pub fn float_isnan(
+    pub fn number_isnan(
         arguments: &[EvalValue],
         _formula: &mut FormulaEngine,
         _env: &Env,
     ) -> Result<EvalValue> {
         expect_arity("isnan", arguments, 1)?;
-        Ok(EvalValue::Bool(float_argument("isnan", arguments)?.is_nan()))
+        let x = match arguments[0] {
+            EvalValue::Float(f) => f,
+            EvalValue::Int(_) => return Ok(EvalValue::Bool(false)),
+            _ => return Err(Error::InvalidArgument("isnan requires a number argument".into())),
+        };
+        Ok(EvalValue::Bool(x.is_nan()))
     }
-    pub fn float_isinf(
+    pub fn number_isinf(
         arguments: &[EvalValue],
         _formula: &mut FormulaEngine,
         _env: &Env,
     ) -> Result<EvalValue> {
         expect_arity("isinf", arguments, 1)?;
-        Ok(EvalValue::Bool(float_argument("isinf", arguments)?.is_infinite()))
+        let x = match &arguments[0] {
+            EvalValue::Float(f) => *f,
+            EvalValue::Int(_) => return Ok(EvalValue::Bool(false)),
+            _ => return Err(Error::InvalidArgument("isinf requires a number argument".into())),
+        };
+        Ok(EvalValue::Bool(x.is_infinite()))
+    }
+    pub fn number_isfin(
+        arguments: &[EvalValue],
+        _formula: &mut FormulaEngine,
+        _env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("isfin", arguments, 1)?;
+        let x = match &arguments[0] {
+            EvalValue::Float(f) => *f,
+            EvalValue::Int(_) => return Ok(EvalValue::Bool(true)),
+            _ => return Err(Error::InvalidArgument("isfin requires a number argument".into())),
+        };
+        Ok(EvalValue::Bool(x.is_finite()))
+    }
+    pub fn number_trunc(
+        arguments: &[EvalValue],
+        _formula: &mut FormulaEngine,
+        _env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("trunc", arguments, 1)?;
+        let x = match &arguments[0] {
+            EvalValue::Float(f) => *f,
+            EvalValue::Int(i) => return Ok(EvalValue::Int(*i)),
+            _ => return Err(Error::InvalidArgument("trunc requires a number argument".into())),
+        };
+        Ok(EvalValue::Float(x.trunc()))
+    }
+    pub fn number_fract(
+        arguments: &[EvalValue],
+        _formula: &mut FormulaEngine,
+        _env: &Env,
+    ) -> Result<EvalValue> {
+        expect_arity("fract", arguments, 1)?;
+        let x = match &arguments[0] {
+            EvalValue::Float(f) => *f,
+            EvalValue::Int(_) => return Ok(EvalValue::Float(0.0)),
+            _ => return Err(Error::InvalidArgument("fract requires a number argument".into())),
+        };
+        Ok(EvalValue::Float(x.fract()))
     }
 
     pub static ALL_BUILTINS: Lazy<IndexMap<Arc<str>, EvalValue>> = Lazy::new(|| {
@@ -7646,4 +8305,3 @@ use rand::{Rng, RngExt};
         map
     });
 }
-
