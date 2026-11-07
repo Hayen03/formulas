@@ -24,6 +24,99 @@ pub static LIST: Lazy<Arc<str>> = Lazy::new(|| Arc::from("list"));
 pub static DICT: Lazy<Arc<str>> = Lazy::new(|| Arc::from("dict"));
 pub static NULL: Lazy<Arc<str>> = Lazy::new(|| Arc::from("null"));
 pub static FUNCTION: Lazy<Arc<str>> = Lazy::new(|| Arc::from("func"));
+pub static TYPE: Lazy<Arc<str>> = Lazy::new(|| Arc::from("type"));
+
+/// A first-class formula type. Calling a type converts one value to that type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EvalType {
+    Null,
+    Bool,
+    Int,
+    Float,
+    Str,
+    List,
+    Dict,
+    Func,
+    Type,
+}
+
+impl EvalType {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Null => "null",
+            Self::Bool => "bool",
+            Self::Int => "int",
+            Self::Float => "float",
+            Self::Str => "str",
+            Self::List => "list",
+            Self::Dict => "dict",
+            Self::Func => "func",
+            Self::Type => "type",
+        }
+    }
+
+    /// Recognizes reserved type literals. `null` remains the null value literal.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "bool" => Self::Bool,
+            "int" => Self::Int,
+            "float" => Self::Float,
+            "str" => Self::Str,
+            "list" => Self::List,
+            "dict" => Self::Dict,
+            "func" => Self::Func,
+            "type" => Self::Type,
+            _ => return None,
+        })
+    }
+
+    /// Converts a value, returning a type error for unsupported conversions.
+    pub fn convert(self, value: &EvalValue) -> Result<EvalValue> {
+        match (self, value) {
+            (Self::Type, _) => Ok(EvalValue::Type(value.value_type())),
+            (Self::Bool, _) => Ok(EvalValue::Bool(value.truthy())),
+            (Self::Int, _) => Ok(EvalValue::Int(value.to_i64()?)),
+            (Self::Float, _) => Ok(EvalValue::Float(value.to_f64()?)),
+            (Self::Str, _) => Ok(EvalValue::String(value.to_string().into())),
+            (Self::Null, EvalValue::Null)
+            | (Self::List, EvalValue::Array(_))
+            | (Self::Dict, EvalValue::Object(_))
+            | (Self::Func, EvalValue::Func(_)) => Ok(value.clone()),
+            (Self::List, EvalValue::String(text)) => Ok(EvalValue::Array(
+                text.chars().map(|ch| EvalValue::String(ch.to_string().into())).collect(),
+            )),
+            (Self::List, EvalValue::Object(entries)) => Ok(EvalValue::Array(
+                entries.keys().cloned().map(EvalValue::String).collect(),
+            )),
+            (Self::Dict, EvalValue::Array(entries)) => {
+                let mut result = IndexMap::new();
+                for entry in entries.iter() {
+                    let EvalValue::Array(pair) = entry else {
+                        bail!(Type, "dict requires a list of [key, value] pairs");
+                    };
+                    let [EvalValue::String(key), value] = pair.as_ref() else {
+                        bail!(Type, "dict requires [key, value] pairs with string keys");
+                    };
+                    result.insert(key.clone(), value.clone());
+                }
+                Ok(EvalValue::Object(Arc::new(result)))
+            }
+            _ => bail!(Type, "Cannot convert {} to {}", value.diagnostic(), self.name()),
+        }
+    }
+}
+
+impl std::fmt::Display for EvalType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Keep the null type distinct from the null value in formatted ASTs.
+        if *self == Self::Null {
+            f.write_str("type(null)")
+        } else {
+            f.write_str(self.name())
+        }
+    }
+}
 
 /// Compares an integer and a float, taking into account the exact bounds of i64 and the precision of f64.
 fn cmp_int_float(i: i64, f: f64) -> Ordering {
@@ -63,6 +156,7 @@ pub enum EvalValue {
     Array(Arc<[EvalValue]>),
     Object(Arc<IndexMap<Arc<str>, EvalValue>>),
     Func(Arc<Function>),
+    Type(EvalType),
 }
 impl PartialEq for EvalValue {
     fn eq(&self, other: &Self) -> bool {
@@ -85,6 +179,7 @@ impl PartialEq for EvalValue {
             (EvalValue::Array(a), EvalValue::Array(b)) => a == b,
             (EvalValue::Object(a), EvalValue::Object(b)) => a == b,
             (EvalValue::Func(a), EvalValue::Func(b)) => a == b,
+            (EvalValue::Type(a), EvalValue::Type(b)) => a == b,
             _ => false,
         }
     }
@@ -99,6 +194,7 @@ impl PartialOrd for EvalValue {
             (EvalValue::String(a), EvalValue::String(b)) => a.partial_cmp(b),
             (EvalValue::Bool(a), EvalValue::Bool(b)) => a.partial_cmp(b),
             (EvalValue::Null, EvalValue::Null) => Some(Ordering::Equal),
+            (EvalValue::Type(a), EvalValue::Type(b)) => a.partial_cmp(b),
             (EvalValue::Array(a), EvalValue::Array(b)) => a.partial_cmp(b),
             (EvalValue::Int(a), EvalValue::Bool(true)) => (*a).partial_cmp(&1),
             (EvalValue::Int(a), EvalValue::Bool(false)) => (*a).partial_cmp(&0),
@@ -266,6 +362,7 @@ impl std::fmt::Display for EvalValue {
                 write!(f, "{{{}}}", strings.join(", "))
             }
             EvalValue::Func(func) => write!(f, "{func}"),
+            EvalValue::Type(value_type) => write!(f, "{value_type}"),
         }
     }
 }
@@ -328,6 +425,7 @@ pub enum EvalValueSerializer {
     Array(Box<[EvalValueSerializer]>),
     Object(Box<IndexMap<String, EvalValueSerializer>>),
     Func(Box<FunctionSerializer>),
+    Type(EvalType),
 }
 impl From<&EvalValue> for EvalValueSerializer {
     fn from(value: &EvalValue) -> Self {
@@ -362,6 +460,7 @@ impl From<&EvalValue> for EvalValueSerializer {
                 EvalValueSerializer::Object(serialized_obj)
             }
             EvalValue::Func(func) => EvalValueSerializer::Func(Box::new(FunctionSerializer::from(func.as_ref()))),
+            EvalValue::Type(value_type) => EvalValueSerializer::Type(*value_type),
         }
     }
 }
@@ -376,6 +475,7 @@ impl TryFrom<EvalValueSerializer> for EvalValue {
             EvalValueSerializer::Nan => EvalValue::Float(f64::NAN),
             EvalValueSerializer::PosInf => EvalValue::Float(f64::INFINITY),
             EvalValueSerializer::NegInf => EvalValue::Float(f64::NEG_INFINITY),
+            EvalValueSerializer::Type(value_type) => EvalValue::Type(value_type),
             EvalValueSerializer::String(s) => EvalValue::String(Arc::from(s)),
             EvalValueSerializer::Array(arr) => {
                 let deserialized_arr: Arc<[EvalValue]> =
@@ -425,7 +525,7 @@ impl EvalValue {
             Self::String(value) => !value.is_empty(),
             Self::Array(value) => !value.is_empty(),
             Self::Object(value) => !value.is_empty(),
-            Self::Func(_) => true,
+            Self::Func(_) | Self::Type(_) => true,
         }
     }
 
@@ -538,6 +638,7 @@ impl EvalValue {
             )
             .into(),
             Self::Func(func) => format!("{}", func).into(),
+            Self::Type(value_type) => value_type.to_string().into(),
         }
     }
 
@@ -552,7 +653,27 @@ impl EvalValue {
             Self::Array(_) => LIST.clone(),
             Self::Object(_) => DICT.clone(),
             Self::Func(_) => FUNCTION.clone(),
+            Self::Type(_) => TYPE.clone(),
         }
+    }
+
+    /// Returns the first-class type represented by `type(value)` in formulas.
+    pub fn value_type(&self) -> EvalType {
+        match self {
+            Self::Null => EvalType::Null,
+            Self::Bool(_) => EvalType::Bool,
+            Self::Int(_) => EvalType::Int,
+            Self::Float(_) => EvalType::Float,
+            Self::String(_) => EvalType::Str,
+            Self::Array(_) => EvalType::List,
+            Self::Object(_) => EvalType::Dict,
+            Self::Func(_) => EvalType::Func,
+            Self::Type(_) => EvalType::Type,
+        }
+    }
+
+    pub fn is_callable(&self) -> bool {
+        matches!(self, Self::Func(_) | Self::Type(_))
     }
 
     /// Returns a direct data member without consulting the type's method registry.
@@ -659,6 +780,10 @@ impl EvalValue {
         env: &Env,
     ) -> Result<EvalValue> {
         match self {
+            Self::Type(value_type) => formula.with_call_frame(value_type.name().into(), |_| {
+                expect_arity(value_type.name(), arguments, 1)?;
+                value_type.convert(&arguments[0])
+            }).with_context(|| format!("Conversion to `{value_type}` failed with {}", diagnostic_arguments(arguments))),
             Self::Func(function) => match function.as_ref() {
                 Function::Builtin(name, function) => formula
                     .with_call_frame(name.clone(), |formula| function(arguments, formula, env))
@@ -688,7 +813,7 @@ impl EvalValue {
                 },
             },
             value => bail!(Type,
-                "Cannot call {}: this value is not a function",
+                "Cannot call {}: this value is not callable",
                 value.diagnostic()
             ),
         }
@@ -997,6 +1122,9 @@ impl EvalValue {
             (EvalValue::Object(_), _) => Ordering::Less,
             (_, EvalValue::Object(_)) => Ordering::Greater,
             (EvalValue::Func(_), EvalValue::Func(_)) => Ordering::Equal,
+            (EvalValue::Func(_), EvalValue::Type(_)) => Ordering::Less,
+            (EvalValue::Type(_), EvalValue::Func(_)) => Ordering::Greater,
+            (EvalValue::Type(a), EvalValue::Type(b)) => a.cmp(b),
         }
     }
     /// Strict equality comparison.
@@ -1036,6 +1164,7 @@ impl EvalValue {
                 true
             },
             (EvalValue::Func(a), EvalValue::Func(b)) => Arc::ptr_eq(a, b),
+            (EvalValue::Type(a), EvalValue::Type(b)) => a == b,
             _ => false,
         }
     }
@@ -1941,7 +2070,9 @@ impl FormulaEngine {
             if name == "_" {
                 return Err(Error::InvalidJoker);
             }
-            if let Some(value) = env.get(&name) {
+            if let Some(value_type) = EvalType::from_name(&name) {
+                output.push_str(&value_type.to_string());
+            } else if let Some(value) = env.get(&name) {
                 output.push_str(&value.to_string());
             } else {
                 output.push('$');
@@ -2019,6 +2150,9 @@ impl FormulaEngine {
         match expression {
             Expr::Literal(value) => Ok(value.clone()),
             Expr::Variable(jkr) if jkr.as_ref() == "_" => Err(Error::InvalidJoker),
+            Expr::Variable(name) if EvalType::from_name(name).is_some() => {
+                Ok(EvalValue::Type(EvalType::from_name(name).unwrap()))
+            }
             Expr::Variable(name) => env
                 .get(name)
                 .cloned()
@@ -2452,10 +2586,43 @@ fn expect_arity_between(name: &str, actual: usize, min: usize, max: usize) -> Re
     Ok(())
 }
 
+fn pow_mod(base: i64, exponent: i64, modulo: i64) -> Result<i64> {
+    if modulo == 0 {
+        return Err(Error::NumericDomain("modulo by zero".into()));
+    }
+    if modulo < 0 {
+        return Err(Error::NumericDomain("modulo must be positive".into()));
+    }
+    if exponent < 0 {
+        return Err(Error::NumericDomain("exponent must be nonnegative".into()));
+    }
+    if modulo == 1 {
+        return Ok(0);
+    }
+    let mut result = 1_i128;
+    let mut base = base % modulo;
+    let mut exponent = exponent;
+    while exponent > 0 {
+        if exponent % 2 == 1 {
+            result = (result as i128 * base as i128) % modulo as i128;
+        }
+        exponent /= 2;
+        base = (base * base) % modulo;
+    }
+    Ok(result as i64)
+}
+
 /// Raises one numeric value to another numeric power.
-fn power_values(base: &EvalValue, exponent: &EvalValue) -> Result<EvalValue> {
+fn power_values(base: &EvalValue, exponent: &EvalValue, modulo: Option<&EvalValue>) -> Result<EvalValue> {
+    let modulo = modulo.map(|m| match m {
+        EvalValue::Int(value) => Ok(*value),
+        _ => bail!(Type, "modulo must be an integer"),
+    }).transpose()?;
     if let (EvalValue::Int(base), EvalValue::Int(exponent)) = (base, exponent) {
         if *exponent >= 0 {
+            if let Some(modulo) = modulo {
+                return pow_mod(*base, *exponent, modulo).map(EvalValue::Int);
+            }
             let exponent = u32::try_from(*exponent)
                 .map_err(|_| error!(Overflow, "The exponent for pow is too large"))?;
             return base
@@ -2463,6 +2630,12 @@ fn power_values(base: &EvalValue, exponent: &EvalValue) -> Result<EvalValue> {
                 .map(EvalValue::Int)
                 .ok_or_else(|| error!(Overflow, "Numeric overflow in pow"));
         }
+        if modulo.is_some() {
+            return Err(Error::InvalidArgument("pow's modulo must be > 0".into()))
+        }
+    }
+    if modulo.is_some() {
+        return Err(Error::InvalidArgument("pow mod is not supported for float operands".into()))
     }
 
     let base = match base {
@@ -3019,6 +3192,7 @@ fn evaluate_binary(
         }
         BinaryOperator::FloorDivide => floor_divide(left, right),
         BinaryOperator::Modulo => modulo_values(left, right),
+        BinaryOperator::Power => power_values(&left, &right, None),
         BinaryOperator::Equal => Ok(EvalValue::Bool(values_equal(&left, &right))),
         BinaryOperator::NotEqual => Ok(EvalValue::Bool(!values_equal(&left, &right))),
         BinaryOperator::StrictEqual => Ok(EvalValue::Bool(left.strict_eq(&right))),
@@ -3569,6 +3743,9 @@ impl TryFrom<ExprSerializer> for Expr {
         match value {
             ExprSerializer::Literal(val) => Ok(Self::Literal(EvalValue::try_from(val)?)),
             ExprSerializer::Variable(name) if name == "_" => Ok(Self::Joker),
+            ExprSerializer::Variable(name) if EvalType::from_name(&name).is_some() => {
+                Ok(Self::Literal(EvalValue::Type(EvalType::from_name(&name).unwrap())))
+            }
             ExprSerializer::Variable(name) => Ok(Self::Variable(Arc::from(name))),
             ExprSerializer::Function(func) => Ok(Self::Function(FormulaFunction::try_from(func)?)),
             ExprSerializer::Let { bindings, body } => Ok(Self::Let {
@@ -3740,7 +3917,7 @@ impl Expr {
         match self {
             Self::Literal(_) => {}
             Self::Variable(name) => {
-                if name.as_ref() != "_" && !bound.contains(name) {
+                if name.as_ref() != "_" && EvalType::from_name(name).is_none() && !bound.contains(name) {
                     free.insert(name.clone());
                 }
             }
@@ -4211,6 +4388,7 @@ pub enum BinaryOperator {
     Divide,
     FloorDivide,
     Modulo,
+    Power,
     Equal,
     NotEqual,
     Less,
@@ -4244,6 +4422,7 @@ impl BinaryOperator {
             Self::Divide => "/",
             Self::FloorDivide => "//",
             Self::Modulo => "%",
+            Self::Power => "**",
             Self::Equal => "==",
             Self::NotEqual => "!=",
             Self::Less => "<",
@@ -4278,6 +4457,7 @@ pub enum Token {
     Plus,
     Minus,
     Star,
+    StarStar,
     Slash,
     FloorSlash,
     Percent,
@@ -4325,6 +4505,7 @@ impl std::fmt::Display for Token {
             Token::Plus => write!(f, "+"),
             Token::Minus => write!(f, "-"),
             Token::Star => write!(f, "*"),
+            Token::StarStar => write!(f, "**"),
             Token::Slash => write!(f, "/"),
             Token::FloorSlash => write!(f, "//"),
             Token::Percent => write!(f, "%"),
@@ -4448,7 +4629,14 @@ impl Tokenizer {
                     Token::Minus
                 }
             }
-            '*' => Token::Star,
+            '*' => {
+                if self.chars.get(self.position) == Some(&'*') {
+                    self.position += 1;
+                    Token::StarStar
+                } else {
+                    Token::Star
+                }
+            },
             '%' => Token::Percent,
             '&' => {
                 if self.chars.get(self.position) == Some(&'&') {
@@ -5191,8 +5379,22 @@ impl Parser {
                     Arc::from(self.parse_unary()?),
                 ))
             }
-            _ => self.parse_postfix(),
+            _ => self.parse_power(),
         }
+    }
+
+    /// Parses power according to formula precedence rules.
+    fn parse_power(&mut self) -> Result<Expr> {
+        let mut expression = self.parse_postfix()?;
+        if matches!(self.peek(), Token::StarStar) {
+            self.advance();
+            expression = Expr::Binary(
+                Arc::from(expression),
+                BinaryOperator::Power,
+                Arc::from(self.parse_unary()?),
+            );
+        }
+        Ok(expression)
     }
 
     /// Parses postfix according to formula precedence rules.
@@ -5284,7 +5486,10 @@ impl Parser {
             Token::Identifier(value) if value == "None" || value == "null" => {
                 Ok(Expr::Literal(EvalValue::Null))
             }
-            Token::Identifier(value) => Ok(Expr::Variable(Arc::from(value))),
+            Token::Identifier(value) => Ok(match EvalType::from_name(&value) {
+                Some(value_type) => Expr::Literal(EvalValue::Type(value_type)),
+                None => Expr::Variable(Arc::from(value)),
+            }),
             Token::LeftParen => {
                 let expression = self.parse_expression()?;
                 self.expect(Token::RightParen)?;
@@ -5492,7 +5697,7 @@ impl Parser {
 
 /// Returns whether a formula word cannot be used as a local binding name.
 fn is_reserved_binding(name: &str) -> bool {
-    matches!(
+    EvalType::from_name(name).is_some() || matches!(
         name,
         "let"
             | "for"
@@ -5520,9 +5725,9 @@ pub mod builtins {
     use crate::formula::{
         expect_arity, expect_arity_between, full_formula, get_path, has_path, indexof_object, indexof_str, minmax,
         mul_values, normalize_index, pop_values, power_values, python_round, range_values, shuffle,
-        sum_values, zip_arrays, Env, EvalValue, FormulaEngine, Function, try_i64_to_f64,
+        sum_values, zip_arrays, Env, EvalType, EvalValue, FormulaEngine, Function, try_i64_to_f64,
     };
-    use crate::err::{bail, error, Error, Result, ResultContext};
+    use crate::err::{ArgumentCount, Error, Result, ResultContext, bail, error};
     use indexmap::IndexMap;
     use rand::distr::weighted::Weight;
 use rand::{Rng, RngExt};
@@ -5554,16 +5759,15 @@ use rand::{Rng, RngExt};
         build_env(&mut env, "dice", dice);
         build_env(&mut env, "min", min);
         build_env(&mut env, "max", max);
-        build_env(&mut env, "abs", abs);
-        build_env(&mut env, "pow", pow);
+        build_env(&mut env, "abs", number_abs);
+        build_env(&mut env, "pow", number_pow);
         build_env(&mut env, "round", number_round);
-        build_env(&mut env, "str", fn_str);
-        build_env(&mut env, "int", int);
-        build_env(&mut env, "float", float);
-        build_env(&mut env, "bool", fn_bool);
+        for value_type in [EvalType::Bool, EvalType::Int, EvalType::Float, EvalType::Str,
+            EvalType::List, EvalType::Dict, EvalType::Func, EvalType::Type] {
+            env.insert(value_type.name(), EvalValue::Type(value_type));
+        }
         build_env(&mut env, "zip", zip);
         build_env(&mut env, "len", len);
-        build_env(&mut env, "type", fn_type);
         build_env(&mut env, "exists", exists);
         build_env(&mut env, "fromentries", fromentries);
         build_env(&mut env, "random", random);
@@ -5649,26 +5853,6 @@ use rand::{Rng, RngExt};
     ) -> Result<EvalValue> {
         minmax(&arguments, Ordering::Greater)
     }
-    pub fn abs(
-        arguments: &[EvalValue],
-        formula: &mut FormulaEngine,
-        env: &Env,
-    ) -> Result<EvalValue> {
-        expect_arity("abs", &arguments, 1)?;
-        match &arguments[0] {
-            EvalValue::Int(value) => Ok(EvalValue::Int(value.checked_abs().ok_or_else(|| Error::Overflow("Overflow in function abs".into()))?)),
-            EvalValue::Float(value) => Ok(EvalValue::Float(value.abs())),
-            _ => bail!(Type, "abs requires a number"),
-        }
-    }
-    pub fn pow(
-        arguments: &[EvalValue],
-        formula: &mut FormulaEngine,
-        env: &Env,
-    ) -> Result<EvalValue> {
-        expect_arity("pow", &arguments, 2)?;
-        power_values(&arguments[0], &arguments[1])
-    }
     pub fn fn_str(
         arguments: &[EvalValue],
         formula: &mut FormulaEngine,
@@ -5737,7 +5921,7 @@ use rand::{Rng, RngExt};
         env: &Env,
     ) -> Result<EvalValue> {
         expect_arity("type", &arguments, 1)?;
-        Ok(EvalValue::String(arguments[0].type_name()))
+        Ok(EvalValue::Type(arguments[0].value_type()))
     }
     /// Tests if there is a variable with the name given as the argument within the environment.
     pub fn exists(
@@ -5912,9 +6096,8 @@ use rand::{Rng, RngExt};
             })
         }
         let f = &arguments[0];
-        match f {
-            EvalValue::Func(_) => {},
-            _ => bail!(Type, "try requires a function as its first argument"),
+        if !f.is_callable() {
+            bail!(Type, "try requires a callable as its first argument");
         }
         let e = if arguments.len() == 2 {
             Some(&arguments[1])
@@ -5927,9 +6110,8 @@ use rand::{Rng, RngExt};
             Ok(value) => Ok(value),
             Err(err) => {
                 if let Some(e) = e {
-                    match e {
-                        EvalValue::Func(_) => {},
-                        _ => bail!(Type, "try requires a function as its second argument"),
+                    if !e.is_callable() {
+                        bail!(Type, "try requires a callable as its second argument");
                     }
                     return e.clone().call(&[err.to_dict()], formula, env);
                 }
@@ -6657,7 +6839,7 @@ use rand::{Rng, RngExt};
         let EvalValue::Array(values) = &arguments[0] else {
             bail!(Type, "{name} requires a list");
         };
-        if !matches!(arguments[1], EvalValue::Func(_)) {
+        if !arguments[1].is_callable() {
             bail!(Type, "{name} requires a key function");
         }
         values
@@ -6958,7 +7140,7 @@ use rand::{Rng, RngExt};
             bail!(Type, "{name} requires a list");
         };
         let predicate = arguments.get(1);
-        if predicate.is_some_and(|value| !matches!(value, EvalValue::Func(_))) {
+        if predicate.is_some_and(|value| !value.is_callable()) {
             bail!(Type, "{name} requires a predicate function");
         }
         for (index, value) in values.iter().enumerate() {
@@ -8079,8 +8261,11 @@ use rand::{Rng, RngExt};
         _formula: &mut FormulaEngine,
         _env: &Env,
     ) -> Result<EvalValue> {
-        expect_arity("pow", arguments, 2)?;
-        power_values(&arguments[0], &arguments[1])
+        if arguments.len() < 2 || arguments.len() > 3 {
+            return Err(Error::Arity { function: "pow".into(), expected: ArgumentCount::Between { min: 2, max: 3 }, actual: arguments.len() })
+        }
+        let modulo = arguments.get(2);
+        power_values(&arguments[0], &arguments[1], modulo)
     }
 
     pub fn int_divmod(
@@ -8296,6 +8481,14 @@ use rand::{Rng, RngExt};
 
     pub static ALL_BUILTINS: Lazy<IndexMap<Arc<str>, EvalValue>> = Lazy::new(|| {
         let mut map = IndexMap::new();
+        // Retain identities used by saved builtin functions from before types were values.
+        for (name, function) in [
+            ("str", fn_str as fn(&[EvalValue], &mut FormulaEngine, &Env) -> Result<EvalValue>),
+            ("int", int), ("float", float), ("bool", fn_bool), ("type", fn_type),
+        ] {
+            let (key, value) = EvalValue::func(name, function);
+            map.insert(key, value);
+        }
         insert_registry(&mut map, &GLOBAL_ENV.vars);
         insert_registry(&mut map, &ARRAY_METHODS);
         insert_registry(&mut map, &OBJECT_METHODS);

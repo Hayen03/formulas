@@ -39,6 +39,7 @@ The following words cannot be used as local binding names or function parameters
 ```text
 let for in if else and or xor not fn
 True False None true false null
+bool int float str list dict func type
 ```
 
 Function parameters also cannot be named `args`. Builtin names such as `sum` and `range` are ordinary global bindings and can be shadowed. Dictionary property names may use keywords: `{'let': 1}.let` is valid.
@@ -49,15 +50,20 @@ A complete formula may be written as `${expression}` for explicit evaluation wit
 
 #reference(
   [*Type returned by `type(value)`*], [*Values and literal syntax*],
-  [`"null"`], [`null` or `None`: absence of a value.],
-  [`"bool"`], [`true` / `True` and `false` / `False`.],
-  [`"int"`], [Signed 64-bit integers, such as `42`, `-7`, `0xff`, `0b101`, `0o17`, and `#ff`.],
-  [`"float"`], [64-bit floating-point numbers, such as `3.14` and `-0.5`.],
-  [`"str"`], [Unicode strings in single or double quotes.],
-  [`"list"`], [Ordered values: `[1, 'two', null]`; empty list: `[]`.],
-  [`"dict"`], [String-keyed entries: `{'name': 'Ada', 'level': 3}`; empty dictionary: `{}`.],
-  [`"func"`], [Callable values: builtin functions and `fn x -> x + 1`.],
+  [`type(null)`], [`null` or `None`: absence of a value.],
+  [`bool`], [`true` / `True` and `false` / `False`.],
+  [`int`], [Signed 64-bit integers, such as `42`, `-7`, `0xff`, `0b101`, `0o17`, and `#ff`.],
+  [`float`], [64-bit floating-point numbers, such as `3.14` and `-0.5`.],
+  [`str`], [Unicode strings in single or double quotes.],
+  [`list`], [Ordered values: `[1, 'two', null]`; empty list: `[]`.],
+  [`dict`], [String-keyed entries: `{'name': 'Ada', 'level': 3}`; empty dictionary: `{}`.],
+  [`func`], [Builtin functions and `fn x -> x + 1`.],
+  [`type`], [First-class type values, such as `int`, `list`, and `type` itself.],
 )
+
+Type names are reserved literals: the parser recognizes them independently of the environment. `type(42) == int` and `type(int) == type` are true; `type(42) == 'int'` is false. Types can be stored in lists and dictionaries, passed to functions, and captured by closures. Equality compares the represented type. Dictionary properties may still use type names, as in `{'int': 1}.int`.
+
+`null` remains a value literal. Its type is obtained with `type(null)` and is displayed using that expression. Every type is callable with exactly one argument. `type(value)` returns the value's type; the other type calls perform the conversions below. Type calls participate in the engine's call-depth limit.
 
 === Numbers
 
@@ -97,13 +103,17 @@ Lists compare element by element for equality. Dictionaries compare their keys a
 
 === Truthiness and conversion
 
-The false values are `null`, `false`, numeric zero (including `-0.0`), `''`, `[]`, and `{}`. All other values are true, including functions. `bool(value)` returns this truthiness.
+The false values are `null`, `false`, numeric zero (including `-0.0`), `''`, `[]`, and `{}`. All other values are true, including functions and types. `bool(value)` returns this truthiness.
 
 `int(value)` accepts integers, floats, booleans, and decimal integer strings. Floats truncate toward zero; out-of-range floats saturate at the integer limits, and NaN converts to zero. `true` converts to `1`, and `false` to `0`. A string such as `'3.5'` or `'0xff'` is not an integer conversion input.
 
-`float(value)` accepts integers, floats, booleans, and floating-point strings, including exponent notation. Numeric string conversions do not strip surrounding whitespace. `null`, lists, dictionaries, and functions cannot be converted to numbers.
+`float(value)` accepts integers, floats, booleans, and floating-point strings, including exponent notation. Numeric string conversions do not strip surrounding whitespace. `null`, lists, dictionaries, functions, and types cannot be converted to numbers.
 
 `str(value)` returns a display representation. Strings include surrounding double quotes, booleans use lowercase names, builtin functions appear as `<builtin name>`, and user-defined functions display as the closure definition. This representation is for display, not a guaranteed round-trip serialization. Text formatting inserts string contents without adding those quotes.
+
+`list(value)` accepts a list unchanged, splits a string into Unicode characters, or returns a dictionary's keys in insertion order. `dict(value)` accepts a dictionary unchanged or a list of `[key, value]` pairs with string keys. Duplicate keys keep their original position and use the last value. Other inputs raise a type error.
+
+`func(value)` accepts an existing function unchanged; a callable type is not a function. `type(null)(value)` accepts only `null`. For example, `let convert = int for convert('42')` returns `42`, and `str(int)` returns `'int'`. Types require exactly one argument even as callbacks; callbacks that receive extra arguments need a wrapper such as `values.map(fn value -> int(value))`.
 
 ```text
 str(fn x -> x * 2)
@@ -123,7 +133,7 @@ str(fn x -> x * 2)
   [`a / b`], [Division, always returning a float. Operands use `float` conversion semantics. A zero divisor is an error.],
   [`a // b`], [Division rounded down toward negative infinity. Two integers produce an integer; otherwise the result is a float.],
   [`a % b`], [Remainder; see the type-dependent sign rules below.],
-  [`pow(a, b)`], [Exponentiation.],
+  [`a ** b`], [Exponentiation.],
 )
 
 For `+` and `*`, mixing an integer with a float produces a float. Two booleans, or a boolean paired with an integer, instead produce a boolean: `+` performs truthy OR and `*` performs truthy AND. A boolean paired with a float is unsupported by these two operators. Strings are not implicitly converted for addition or multiplication.
@@ -140,7 +150,7 @@ For `+` and `*`, mixing an integer with a float produces a float. Two booleans, 
 
 The numeric results are `-3`, `-1`, and `2.0`. String repetition gives `'ababab'`; dictionary addition gives `{'a': 2, 'b': 3}`.
 
-`pow` returns an integer for an integer base and a nonnegative integer exponent, with checked overflow. Other supported inputs produce a float. Zero to a negative power or complex results are errors.
+`**` returns an integer for an integer base and a nonnegative integer exponent, with checked overflow. Other supported inputs produce a float. Zero to a negative power or complex results are errors.
 
 === Comparisons and membership
 
@@ -252,7 +262,8 @@ bit_and       = shift, {"&", shift} ;
 shift         = sum, {("<<" | ">>" | ">>>"), sum} ;
 sum           = product, {("+" | "-"), product} ;
 product       = unary, {("*" | "/" | "//" | "%"), unary} ;
-unary         = ("+" | "-" | "!" | "~"), unary | postfix ;
+unary         = ("+" | "-" | "!" | "~"), unary | power ;
+power         = postfix, {"**", unary} ;
 postfix       = primary, {suffix} ;
 ```
 
@@ -261,12 +272,14 @@ Repetitions of binary operators associate left to right, except that comparisons
 === Values and postfix operations
 
 ```text
-primary    = scalar | identifier | dice
+primary    = scalar | type_literal | identifier | dice
            | "(", expression, ")" | list | dictionary
            | let_expression | function_expression | "_";
 scalar     = integer | float | string
            | "true" | "True" | "false" | "False"
            | "null" | "None" ;
+type_literal = "bool" | "int" | "float" | "str"
+             | "list" | "dict" | "func" | "type" ;
 suffix     = "(", [arguments], ")"
            | ".", (identifier | integer)
            | "[", expression, "]"
@@ -429,17 +442,17 @@ A comprehension has one `for` clause and at most one filter. Nest comprehensions
 
 == Default global functions
 
-The following functions are available as standard global bindings. Their names can be shadowed like other variable names.
+The following functions are available as standard global bindings. Their names can be shadowed like other variable names, except for reserved callable types such as `int` and `type`, which are listed here for reference.
 
 === Values and numbers
 
 #reference(
   [*Call*], [*Behavior*],
-  [`type(value)`], [Return the type name listed under datatypes.],
+  [`type(value)`], [Return the first-class type listed under datatypes, rather than a string.],
   [`str(value)`, `int(value)`, `float(value)`, `bool(value)`], [Convert as described under truthiness and conversion.],
   [`exists(name)`], [Return whether a variable with the given string name exists in the current environment.],
   [`abs(number)`], [Absolute value of an integer or float, preserving its type.],
-  [`pow(base, exponent)`], [Exponentiation; see arithmetic.],
+  [`pow(base, exponent[, modulo])`], [Exponentiation; see arithmetic. If modulo is provided, the exponent and base must be nonnegative integers.],
   [`round(value[, digits])`], [Round with halfway ties to even; digits default to zero. Negative digits round to tens, hundreds, etc. Return an integer when digits are zero or negative, otherwise a float. Nonfinite values and unsupported digit ranges are errors.],
   [`min(value, ...)`, `max(value, ...)`], [Select among one or more arguments. A single list argument is returned as a list, not reduced. Keep the first candidate on ties or incomparable comparisons.],
   [`nan()`, `inf()`], [Return NaN or positive infinity as a float.],
@@ -504,11 +517,13 @@ Random operations share one stream of draws. Reproducing results requires the sa
 
 `order` uses a total ordering between all possible values. Incompatible types are sorted by their types in this order:
 ```
-null < int, float and bool < string < list < dict < function
+null < int, float and bool < string < list < dict < function < type
 ```
 Booleans count as `0` and `1`. Numeric total ordering distinguishes negative zero from positive zero and places negative NaNs before negative infinity and positive NaNs after positive infinity. Mixed integer/float ordering preserves integer precision.
 
 Lists compare length first, then compare corresponding elements by total ordering when lengths match. Dictionaries compare their entries in sorted-key order: each key is compared first, then its value; a shared entry prefix is followed by a length comparison. All functions tie in this ordering, even when they are unequal under `==` or `===`.
+
+Type values compare by the represented type in this order: `type(null)`, `bool`, `int`, `float`, `str`, `list`, `dict`, `func`, `type`.
 
 === Evaluation and errors
 
@@ -522,13 +537,14 @@ An unwrapped expression may have surrounding whitespace. A `${...}` wrapper must
 
 == Type methods
 
-The signatures in this section omit the receiver. For example, `.len()` means `value.len()`. Booleans, null, and functions have no registered type methods.
+The signatures in this section omit the receiver. For example, `.len()` means `value.len()`. Booleans, null, functions, and type values have no registered methods.
 
 === Integer and float methods
 
 #reference(
   [*Method*], [*Behavior*],
-  [`.abs()`, `.pow(exponent)`], [Absolute value and exponentiation, as with the globals. Available on integers and floats.],
+  [`.abs()`], [Absolute value and exponentiation, as with the globals. Available on integers and floats.],
+  [`.pow(exponent[, modulo])`], [Exponentiation; see arithmetic. If modulo is provided, the exponent and base must be nonnegative integers.],
   [`.min(value, ...)`, `.max(value, ...)`], [Global min/max with the receiver as the first candidate. No additional argument is required.],
   [`.clamp(low, high)`], [Limit the value to inclusive bounds. Integer receivers convert bounds to integers and require low not to exceed high. Float receivers convert bounds to floats, swap reversed bounds, and reject NaN bounds.],
   [`.sign()`], [Integer result indicating sign. Integers return -1, 0, or 1. Floats return -1 or 1 according to the sign bit, including signed zero; NaN gives 0.],

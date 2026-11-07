@@ -7,6 +7,137 @@ use crate::builtins::GLOBAL_ENV;
 use super::*;
 
 #[test]
+fn type_names_are_literals_and_type_returns_types() {
+    let mut engine = engine();
+    let mut env = Env::new();
+    for name in ["bool", "int", "float", "str", "list", "dict", "func", "type"] {
+        let expected = EvalValue::Type(EvalType::from_name(name).unwrap());
+        env.insert(name, EvalValue::Int(99));
+        let ast = Parser::new(Tokenizer::new(name).tokenize().unwrap()).parse().unwrap();
+        assert_eq!(ast, Expr::Literal(expected.clone()));
+        assert_eq!(engine.evaluate(name, &env).unwrap(), expected);
+        assert_eq!(engine.evaluate(&format!("${name}"), &env).unwrap(), expected);
+        assert_eq!(engine.evalexpr(&Expr::Variable(name.into()), &env).unwrap(), expected);
+        assert_eq!(Expr::try_from(ExprSerializer::Variable(name.into())).unwrap(), ast);
+    }
+    for (source, expected) in [
+        ("type(null)", EvalType::Null), ("type(false)", EvalType::Bool),
+        ("type(1)", EvalType::Int), ("type(1.0)", EvalType::Float),
+        ("type('a')", EvalType::Str), ("type([])", EvalType::List),
+        ("type({})", EvalType::Dict), ("type(fn -> 1)", EvalType::Func),
+        ("type(sum)", EvalType::Func), ("type(int)", EvalType::Type),
+        ("type(type)", EvalType::Type), ("type(type(null))", EvalType::Type),
+    ] {
+        assert_eq!(engine.evaluate(source, &env).unwrap(), EvalValue::Type(expected), "{source}");
+    }
+    assert_eq!(engine.evaluate("null", &env).unwrap(), EvalValue::Null);
+    assert_eq!(engine.evaluate("None", &env).unwrap(), EvalValue::Null);
+    assert_eq!(engine.evaluate("type(1) == 'int'", &env).unwrap(), EvalValue::Bool(false));
+    assert_eq!(engine.format("$int ${int} $type".into(), &env).unwrap().as_ref(), "int int type");
+    let mut bare_engine = FormulaEngine::new(Some(1)).with_globals(Env::new());
+    assert_eq!(bare_engine.evaluate("type(int('12')) == int", &Env::new()).unwrap(), EvalValue::Bool(true));
+}
+
+#[test]
+fn reserved_types_cannot_be_bound_but_can_be_property_names() {
+    use crate::err::SyntaxError;
+
+    for name in ["bool", "int", "float", "str", "list", "dict", "func", "type"] {
+        for source in [
+            format!("let {name} = 1 for 0"), format!("fn {name} -> 0"),
+            format!("let [*{name}] = [] for 0"), format!("[0 for {name} in []]"),
+            format!("let ${name} = 1 for 0"),
+        ] {
+            let error = validate_formula_syntax(&source).unwrap_err();
+            assert!(matches!(error.without_context(), Error::Syntax {
+                kind: SyntaxError::InvalidBinding { .. }, ..
+            }), "{source}: {error:#}");
+        }
+        assert_eq!(engine().evaluate(&format!("{{'{name}': 7}}.{name}"), &Env::new()).unwrap(), EvalValue::Int(7));
+    }
+}
+
+#[test]
+fn callable_types_convert_values_and_report_errors() {
+    let mut engine = engine();
+    for (source, expected) in [
+        ("int('42')", "42"), ("float('2.5')", "2.5"), ("bool([])", "false"),
+        ("str(int)", "'int'"), ("str('x')", "'\"x\"'"),
+        ("list('aé')", "['a', 'é']"), ("list({'a': 1, 'b': 2})", "['a', 'b']"),
+        ("list([1, 2])", "[1, 2]"), ("dict([])", "{}"),
+        ("dict([['a', 1], ['a', 2], ['b', 3]])", "{'a': 2, 'b': 3}"),
+        ("dict({'a': 1})", "{'a': 1}"), ("func(fn x -> x + 1)(2)", "3"),
+        ("type(null)(null)", "null"), ("let convert = int for convert('7')", "7"),
+        ("apply(int, ['7'])", "7"), ("{'convert': int}.convert('7')", "7"),
+        ("{'convert': int}['convert']('7')", "7"),
+        ("['1', '2'].map(fn x -> int(x))", "[1, 2]"),
+        ("try(fn -> error('bad'), type)", "dict"),
+    ] {
+        let expected = engine.evaluate(expected, &Env::new()).unwrap();
+        assert_eq!(engine.evaluate(source, &Env::new()).unwrap(), expected, "{source}");
+    }
+    for source in ["int([])", "list(1)", "dict([1])", "dict([[1, 2]])",
+        "dict([['a']])", "func(int)", "type(null)(1)"] {
+        let error = engine.evaluate(source, &Env::new()).unwrap_err();
+        assert!(matches!(error.without_context(), Error::Type(_)), "{source}: {error:#}");
+    }
+    for source in ["int()", "int(1, 2)", "type()", "list()", "type(null)()"] {
+        let error = engine.evaluate(source, &Env::new()).unwrap_err();
+        assert!(matches!(error.without_context(), Error::Arity { .. }), "{source}: {error:#}");
+    }
+}
+
+#[test]
+fn types_preserve_identity_ordering_and_serialization() {
+    let mut engine = engine();
+    for kind in [EvalType::Null, EvalType::Bool, EvalType::Int, EvalType::Float,
+        EvalType::Str, EvalType::List, EvalType::Dict, EvalType::Func, EvalType::Type] {
+        let value = EvalValue::Type(kind);
+        assert!(value.truthy());
+        assert!(value.is_callable());
+        assert_eq!(value.type_name().as_ref(), "type");
+        assert!(value.strict_eq(&value.clone()));
+        let json = serde_json::to_string(&value).unwrap();
+        let restored: EvalValue = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, value);
+        assert_eq!(engine.evaluate(&value.to_string(), &Env::new()).unwrap(), value);
+        let ast = Expr::Literal(value);
+        let saved = serde_json::to_string(&ExprSerializer::from(&ast)).unwrap();
+        assert_eq!(Expr::try_from(serde_json::from_str::<ExprSerializer>(&saved).unwrap()).unwrap(), ast);
+    }
+    assert!(serde_json::from_str::<EvalValue>(r#"{"Type":"imaginary"}"#).is_err());
+    assert_eq!(engine.evaluate("int === type(1) and int != float", &Env::new()).unwrap(), EvalValue::Bool(true));
+    assert_eq!(engine.evaluate("[int, float, int].unique()", &Env::new()).unwrap(),
+        EvalValue::Array(vec![EvalValue::Type(EvalType::Int), EvalValue::Type(EvalType::Float)].into()));
+    assert_eq!(engine.evaluate("order(int, float)", &Env::new()).unwrap(), EvalValue::Int(-1));
+    assert_eq!(engine.evaluate("order(sum, int)", &Env::new()).unwrap(), EvalValue::Int(-1));
+}
+
+#[test]
+fn type_values_survive_closures_and_legacy_builtin_loading() {
+    let mut engine = engine();
+    let mut env = Env::new();
+    env.insert("int", EvalValue::Int(99));
+    let closure = engine.evaluate("fn x -> int(x)", &env).unwrap();
+    let EvalValue::Func(function) = &closure else { panic!("expected function") };
+    let Function::User(function) = function.as_ref() else { panic!("expected user function") };
+    assert!(!function.captures.contains_key("int"));
+    let closure = engine.evaluate("let convert = int for fn x -> convert(x)", &env).unwrap();
+    let restored: EvalValue = serde_json::from_str(&serde_json::to_string(&closure).unwrap()).unwrap();
+    assert_eq!(restored.call(&[EvalValue::String("42".into())], &mut engine, &Env::new()).unwrap(), EvalValue::Int(42));
+    for name in ["int", "float", "str", "bool", "type"] {
+        let function = Function::try_from(FunctionSerializer::Builtin(name.into())).unwrap();
+        let actual = EvalValue::Func(Arc::new(function))
+            .call(&[EvalValue::Int(2)], &mut engine, &Env::new()).unwrap();
+        let expected = engine.evaluate(&format!("{name}(2)"), &Env::new()).unwrap();
+        assert_eq!(actual, expected);
+    }
+    engine = engine.with_max_rec(0);
+    let error = engine.evaluate("int(1)", &Env::new()).unwrap_err();
+    assert!(matches!(error.without_context(), Error::RecursionLimit { .. }));
+}
+
+#[test]
 fn jokers_are_expressions_but_cannot_be_evaluated() {
     let mut engine = engine();
     let mut env = Env::new();
@@ -1153,7 +1284,7 @@ fn incomplete_keyword_operands_are_syntax_errors() {
 
         assert!(report.contains("[1, 2] (type list)"));
         assert!(report.contains("only int, float, bool"));
-        assert!(report.contains("builtin `int`"));
+        assert!(report.contains("Conversion to `int`"));
         assert!(report.contains("In fn(value)"));
         assert!(report.contains("Call `int`"));
         assert!(report.contains("Error in formula"));
