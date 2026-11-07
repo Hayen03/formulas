@@ -1345,25 +1345,76 @@ impl<'a> Env<'a> {
 /// A list may contain one `*name` rest capture at each nesting level.
 /// Untagged serialization keeps existing name-only saved formulas compatible.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(from = "BindingPatternRepr", into = "BindingPatternRepr")]
 pub enum BindingPattern {
+    Joker,
+    RestJoker,
     Name(String),
     List(Vec<BindingPattern>),
     Rest { rest: String },
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum BindingPatternRepr {
+    Name(String),
+    List(Vec<BindingPattern>),
+    Rest{rest: String }
+}
+
+impl From<BindingPatternRepr> for BindingPattern {
+    fn from(repr: BindingPatternRepr) -> Self {
+        match repr {
+            BindingPatternRepr::Name(name) if name == "_" => Self::Joker,
+            BindingPatternRepr::Name(name) => Self::from(name),
+            BindingPatternRepr::List(items) => Self::List(items),
+            BindingPatternRepr::Rest { rest } if rest == "_" => Self::RestJoker,
+            BindingPatternRepr::Rest { rest } => Self::Rest { rest },
+        }
+    }
+}
+impl From<BindingPattern> for BindingPatternRepr {
+    fn from(pattern: BindingPattern) -> Self {
+        match pattern {
+            BindingPattern::Name(name) => Self::Name(name),
+            BindingPattern::List(items) => Self::List(items),
+            BindingPattern::Rest { rest } => Self::Rest { rest },
+            BindingPattern::Joker => Self::Name("_".to_string()),
+            BindingPattern::RestJoker => Self::Rest { rest: "_".to_string() },
+        }
+    }
+}
+
 impl From<&str> for BindingPattern {
     fn from(name: &str) -> Self {
+        if name == "_" {
+            return Self::Joker;
+        }
+        if name == "*_" {
+            return Self::RestJoker;
+        }
         Self::Name(name.to_owned())
     }
 }
 impl From<String> for BindingPattern {
     fn from(name: String) -> Self {
+        if name == "_" {
+            return Self::Joker;
+        }
+        if name == "*_" {
+            return Self::RestJoker;
+        }
         Self::Name(name)
     }
 }
 impl From<Arc<str>> for BindingPattern {
     fn from(name: Arc<str>) -> Self {
+        if name.as_ref() == "_" {
+            return Self::Joker;
+        }
+        if name.as_ref() == "*_" {
+            return Self::RestJoker;
+        }
         Self::Name(name.to_string())
     }
 }
@@ -1373,6 +1424,8 @@ impl std::fmt::Display for BindingPattern {
             Self::Name(name) => write!(f, "{name}"),
             Self::List(items) => write!(f, "[{}]", format_patterns(items)),
             Self::Rest { rest } => write!(f, "*{rest}"),
+            Self::Joker => write!(f, "_"),
+            Self::RestJoker => write!(f, "*_"),
         }
     }
 }
@@ -1386,25 +1439,27 @@ fn format_patterns(patterns: &[BindingPattern]) -> String {
 impl BindingPattern {
     fn collect_names(&self, names: &mut IndexSet<Arc<str>>) {
         match self {
-            Self::Name(name) | Self::Rest { rest: name } => {
-                if name != "_" {
-                    names.insert(name.as_str().into());
-                }
+            Self::Name(name) | Self::Rest { rest: name } if name != "_" => {
+                names.insert(name.as_str().into());
             }
             Self::List(items) => {
                 for item in items {
                     item.collect_names(names);
                 }
             }
+            Self::Joker | Self::Name { .. } => {
+                // Joker does not bind any name
+            }
+            Self::RestJoker | Self::Rest { .. } => {
+                // RestJoker does not bind any name
+            }
         }
     }
 
     fn bind(&self, value: EvalValue, env: &mut Env) -> Result<()> {
         match self {
-            Self::Name(name) => {
-                if name != "_" {
-                    env.insert(name.as_str(), value);
-                }
+            Self::Name(name) if name != "_" => {
+                env.insert(name.as_str(), value);
             }
             Self::List(patterns) => {
                 let EvalValue::Array(values) = &value else {
@@ -1414,7 +1469,7 @@ impl BindingPattern {
                     );
                 };
                 let rest_count = patterns.iter()
-                    .filter(|pattern| matches!(pattern, Self::Rest { .. }))
+                    .filter(|pattern| matches!(pattern, Self::Rest { .. }) || matches!(pattern, Self::RestJoker))
                     .count();
                 if rest_count > 1 {
                     bail!(InvalidArgument, "A list pattern can contain only one rest capture");
@@ -1429,6 +1484,11 @@ impl BindingPattern {
                 }
                 let mut index = 0;
                 for pattern in patterns {
+                    if let Self::RestJoker = pattern {
+                        let end = index + values.len() - required;
+                        index = end;
+                        continue;
+                    }
                     if let Self::Rest { rest: name } = pattern {
                         let end = index + values.len() - required;
                         if name != "_" {
@@ -1443,6 +1503,12 @@ impl BindingPattern {
             }
             Self::Rest { .. } => {
                 bail!(InvalidArgument, "A rest capture must belong to a list pattern");
+            }
+            Self::Joker | Self::Name { .. }=> {
+                // Joker does not bind any value
+            }
+            Self::RestJoker => {
+                bail!(InvalidArgument, "A rest joker must belong to a list pattern");
             }
         }
         Ok(())
@@ -1469,6 +1535,21 @@ impl std::fmt::Display for FormulaFunction {
         } else {
             write!(f, "fn -> {}", self.body)
         }
+    }
+}
+
+impl FormulaFunction {
+    /// Returns a new `FormulaFunction` with all joker expressions replaced by the given `replacement`.
+    /// The replacement is applied recursively to the body of the function.
+    fn replace_joker(&self, replacement: &Expr) -> ReplaceJokerResult<Self> {
+        let new_body = match self.body.replace_joker_inner(replacement) {
+            ReplaceJokerResult::Replaced(expr) => expr,
+            ReplaceJokerResult::Unchanged => return ReplaceJokerResult::Unchanged,
+        };
+        ReplaceJokerResult::Replaced(Self {
+            parameters: self.parameters.clone(),
+            body: Arc::new(new_body),
+        })
     }
 }
 
@@ -1857,6 +1938,9 @@ impl FormulaEngine {
             }
 
             let name: String = chars[index + 1..end].iter().collect();
+            if name == "_" {
+                return Err(Error::InvalidJoker);
+            }
             if let Some(value) = env.get(&name) {
                 output.push_str(&value.repr());
             } else {
@@ -1934,6 +2018,7 @@ impl FormulaEngine {
     fn evaluate_ast(&mut self, expression: &Expr, env: &Env) -> Result<EvalValue> {
         match expression {
             Expr::Literal(value) => Ok(value.clone()),
+            Expr::Variable(jkr) if jkr.as_ref() == "_" => Err(Error::InvalidJoker),
             Expr::Variable(name) => env
                 .get(name)
                 .cloned()
@@ -2224,6 +2309,7 @@ impl FormulaEngine {
                 let step = bound(step)?.unwrap_or(1);
                 slice_value(&object, start, end, step)
             }
+            Expr::Joker => Err(Error::InvalidJoker)
         }
     }
 
@@ -3355,6 +3441,7 @@ pub enum Expr {
         end: Option<Arc<Expr>>,
         step: Option<Arc<Expr>>,
     },
+    Joker,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3395,6 +3482,7 @@ pub enum ExprSerializer {
         end: Option<Box<ExprSerializer>>,
         step: Option<Box<ExprSerializer>>,
     },
+    Joker,
 }
 impl From<&Expr> for ExprSerializer {
     fn from(value: &Expr) -> Self {
@@ -3459,6 +3547,7 @@ impl From<&Expr> for ExprSerializer {
                 end: end.as_ref().map(|expr| Box::new(Self::from(expr.as_ref()))),
                 step: step.as_ref().map(|expr| Box::new(Self::from(expr.as_ref()))),
             },
+            Expr::Joker => Self::Joker,
         }
     }
 }
@@ -3467,6 +3556,7 @@ impl TryFrom<ExprSerializer> for Expr {
     fn try_from(value: ExprSerializer) -> Result<Self, Self::Error> {
         match value {
             ExprSerializer::Literal(val) => Ok(Self::Literal(EvalValue::try_from(val)?)),
+            ExprSerializer::Variable(name) if name == "_" => Ok(Self::Joker),
             ExprSerializer::Variable(name) => Ok(Self::Variable(Arc::from(name))),
             ExprSerializer::Function(func) => Ok(Self::Function(FormulaFunction::try_from(func)?)),
             ExprSerializer::Let { bindings, body } => Ok(Self::Let {
@@ -3531,6 +3621,7 @@ impl TryFrom<ExprSerializer> for Expr {
                 end: end.map(|expr| Self::try_from(*expr).map(Arc::new)).transpose()?,
                 step: step.map(|expr| Self::try_from(*expr).map(Arc::new)).transpose()?,
             }),
+            ExprSerializer::Joker => Ok(Self::Joker),
         }
     }
 }
@@ -3543,6 +3634,45 @@ pub struct Comprehension {
     filter: Option<Arc<Expr>>,
 }
 
+impl Comprehension {
+    /// Returns a new `Comprehension` with all joker expressions replaced by the given `replacement`.
+    /// The replacement is applied recursively to the iterable and filter expressions.
+    fn replace_joker(&self, replacement: &Expr) -> ReplaceJokerResult<Self> {
+        let new_iterable = self.iterable.replace_joker_inner(replacement);
+        let new_filter = self.filter.as_ref().map(|f| f.replace_joker_inner(replacement));
+        match (new_iterable, new_filter) {
+            (ReplaceJokerResult::Unchanged, None) | (ReplaceJokerResult::Unchanged, Some(ReplaceJokerResult::Unchanged)) => { ReplaceJokerResult::Unchanged },
+            (ReplaceJokerResult::Replaced(new_iterable), None) => {
+                ReplaceJokerResult::Replaced(Self {
+                    targets: self.targets.clone(),
+                    iterable: Arc::new(new_iterable),
+                    filter: None,
+                })
+            },
+            (ReplaceJokerResult::Replaced(new_iterable), Some(ReplaceJokerResult::Replaced(new_filter))) => {
+                ReplaceJokerResult::Replaced(Self {
+                    targets: self.targets.clone(),
+                    iterable: Arc::new(new_iterable),
+                    filter: Some(Arc::new(new_filter)),
+                })
+            }
+            (ReplaceJokerResult::Unchanged, Some(ReplaceJokerResult::Replaced(new_filter))) => {
+                ReplaceJokerResult::Replaced(Self {
+                    targets: self.targets.clone(),
+                    iterable: self.iterable.clone(),
+                    filter: Some(Arc::new(new_filter)),
+                })
+            }
+            (ReplaceJokerResult::Replaced(new_iterable), Some(ReplaceJokerResult::Unchanged)) => {
+                ReplaceJokerResult::Replaced(Self {
+                    targets: self.targets.clone(),
+                    iterable: Arc::new(new_iterable),
+                    filter: self.filter.clone(),
+                })
+            }
+        }
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComprehensionSerializer {
     targets: Box<[BindingPattern]>,
@@ -3583,6 +3713,11 @@ impl FormulaFunction {
     }
 }
 
+enum ReplaceJokerResult<T> {
+    Replaced(T),
+    Unchanged,
+}
+
 impl Expr {
     /// Traverses an expression and records names not bound by its surrounding lexical scopes.
     fn collect_free_variables(
@@ -3593,7 +3728,7 @@ impl Expr {
         match self {
             Self::Literal(_) => {}
             Self::Variable(name) => {
-                if !bound.contains(name) {
+                if name.as_ref() != "_" && !bound.contains(name) {
                     free.insert(name.clone());
                 }
             }
@@ -3699,6 +3834,258 @@ impl Expr {
                     expr.collect_free_variables(bound, free);
                 }
             }
+            Self::Joker => {},
+        }
+    }
+
+    /// Returns a new `Expr` with all joker expressions replaced by the given `replacement`.
+    /// The replacement is applied recursively to all sub-expressions.
+    /// 
+    pub fn replace_joker(&self, replacement: &Self) -> Self {
+        match self.replace_joker_inner(replacement) {
+            ReplaceJokerResult::Replaced(expr) => expr,
+            ReplaceJokerResult::Unchanged => self.clone(),
+        }
+    }
+    fn replace_joker_inner(&self, replacement: &Self) -> ReplaceJokerResult<Self> {
+        match self {
+            Self::Joker => {
+                ReplaceJokerResult::Replaced(replacement.clone())
+            }
+            Expr::Literal(_) => {ReplaceJokerResult::Unchanged},
+            Expr::Variable(var) if var.as_ref() == "_" => {
+                ReplaceJokerResult::Replaced(replacement.clone())
+            },
+            Expr::Variable(_) => { ReplaceJokerResult::Unchanged },
+            Expr::Function(formula_function) => {
+                let new_formula_function = formula_function.replace_joker(replacement);
+                match new_formula_function {
+                    ReplaceJokerResult::Replaced(new_formula_function) => ReplaceJokerResult::Replaced(Self::Function(new_formula_function)),
+                    ReplaceJokerResult::Unchanged => ReplaceJokerResult::Unchanged,
+                }
+            },
+            Expr::Let { bindings, body } => {
+                let new_bindings: Vec<ReplaceJokerResult<Expr>> = bindings.iter().map(|(_, value)| value.replace_joker_inner(replacement)).collect();
+                let binding_unchanged = new_bindings.iter().all(|value| matches!(value, ReplaceJokerResult::Unchanged));
+                let new_body = body.replace_joker_inner(replacement);
+                match (binding_unchanged, new_body) {
+                    (true, ReplaceJokerResult::Unchanged) => ReplaceJokerResult::Unchanged,
+                    (true, ReplaceJokerResult::Replaced(new_body)) => ReplaceJokerResult::Replaced(Expr::Let { body: Arc::new(new_body), bindings: bindings.clone() }),
+                    (false, new_body) => {
+                        let replacement_bindings = new_bindings.into_iter().enumerate().map(|(index, value)| match value {
+                            ReplaceJokerResult::Replaced(new_value) => (bindings[index].0.clone(), new_value),
+                            ReplaceJokerResult::Unchanged => (bindings[index].0.clone(), bindings[index].1.clone()),
+                        }).collect::<Arc<[(BindingPattern, Expr)]>>();
+                        if let ReplaceJokerResult::Replaced(new_body) = new_body {
+                            ReplaceJokerResult::Replaced(Expr::Let { body: Arc::new(new_body), bindings: replacement_bindings })
+                        } else {
+                            ReplaceJokerResult::Replaced(Expr::Let { body: body.clone(), bindings: replacement_bindings })
+                        }
+                    },
+                }
+            },
+            Expr::Array(exprs) => {
+                let new_exprs: Vec<ReplaceJokerResult<Expr>> = exprs.iter().map(|expr| expr.replace_joker_inner(replacement)).collect();
+                let unchanged = new_exprs.iter().all(|expr| matches!(expr, ReplaceJokerResult::Unchanged));
+                if unchanged {
+                    ReplaceJokerResult::Unchanged
+                } else {
+                    let replaced_exprs = new_exprs.into_iter().enumerate().map(|(index, expr)| match expr {
+                        ReplaceJokerResult::Replaced(new_expr) => new_expr,
+                        ReplaceJokerResult::Unchanged => exprs[index].clone(), // This line may need adjustment to correctly clone the original expression
+                    }).collect::<Arc<[Expr]>>();
+                    ReplaceJokerResult::Replaced(Expr::Array(replaced_exprs))
+                }
+            },
+            Expr::Object(items) => {
+                let new_items: Vec<(ReplaceJokerResult<Expr>, ReplaceJokerResult<Expr>)> = items.iter().map(|(key, value)| (key.replace_joker_inner(replacement), value.replace_joker_inner(replacement))).collect();
+                let unchanged = new_items.iter().all(|(key, value)| matches!(key, ReplaceJokerResult::Unchanged) && matches!(value, ReplaceJokerResult::Unchanged));
+                if unchanged {
+                    ReplaceJokerResult::Unchanged
+                } else {
+                    let replaced_items = new_items.into_iter().enumerate().map(|(index, (key, value))| {
+                        let key = match key {
+                            ReplaceJokerResult::Replaced(new_key) => new_key,
+                            ReplaceJokerResult::Unchanged => items[index].0.clone(),
+                        };
+                        let value = match value {
+                            ReplaceJokerResult::Replaced(new_value) => new_value,
+                            ReplaceJokerResult::Unchanged => items[index].1.clone(),
+                        };
+                        (key, value)
+                    }).collect::<Arc<[(Expr, Expr)]>>();
+                    ReplaceJokerResult::Replaced(Expr::Object(replaced_items))
+                }
+            },
+            Expr::ListComprehension { value, comprehension } => {
+                let new_value = value.replace_joker_inner(replacement);
+                let new_comprehension = comprehension.replace_joker(replacement);
+                match (new_value, new_comprehension) {
+                    (ReplaceJokerResult::Unchanged, ReplaceJokerResult::Unchanged) => ReplaceJokerResult::Unchanged,
+                    (ReplaceJokerResult::Unchanged, ReplaceJokerResult::Replaced(new_comprehension)) => ReplaceJokerResult::Replaced(Expr::ListComprehension { value: value.clone(), comprehension: new_comprehension }),
+                    (ReplaceJokerResult::Replaced(new_value), ReplaceJokerResult::Unchanged) => ReplaceJokerResult::Replaced(Expr::ListComprehension { value: Arc::new(new_value), comprehension: comprehension.clone() }),
+                    (ReplaceJokerResult::Replaced(new_value), ReplaceJokerResult::Replaced(new_comprehension)) => ReplaceJokerResult::Replaced(Expr::ListComprehension { value: Arc::new(new_value), comprehension: new_comprehension }),
+                }
+            },
+            Expr::ObjectComprehension { key, value, comprehension } => {
+                let new_key = key.replace_joker_inner(replacement);
+                let new_value = value.replace_joker_inner(replacement);
+                let new_comprehension = comprehension.replace_joker(replacement);
+                match (new_key, new_value, new_comprehension) {
+                    (ReplaceJokerResult::Unchanged, ReplaceJokerResult::Unchanged, ReplaceJokerResult::Unchanged) => ReplaceJokerResult::Unchanged,
+                    (ReplaceJokerResult::Unchanged, ReplaceJokerResult::Unchanged, ReplaceJokerResult::Replaced(new_comprehension)) => ReplaceJokerResult::Replaced(Expr::ObjectComprehension { key: key.clone(), value: value.clone(), comprehension: new_comprehension }),
+                    (ReplaceJokerResult::Unchanged, ReplaceJokerResult::Replaced(new_value), ReplaceJokerResult::Unchanged) => ReplaceJokerResult::Replaced(Expr::ObjectComprehension { key: key.clone(), value: Arc::new(new_value), comprehension: comprehension.clone() }),
+                    (ReplaceJokerResult::Unchanged, ReplaceJokerResult::Replaced(new_value), ReplaceJokerResult::Replaced(new_comprehension)) => ReplaceJokerResult::Replaced(Expr::ObjectComprehension { key: key.clone(), value: Arc::new(new_value), comprehension: new_comprehension }),
+                    (ReplaceJokerResult::Replaced(new_key), ReplaceJokerResult::Unchanged, ReplaceJokerResult::Unchanged) => ReplaceJokerResult::Replaced(Expr::ObjectComprehension { key: Arc::new(new_key), value: value.clone(), comprehension: comprehension.clone() }),
+                    (ReplaceJokerResult::Replaced(new_key), ReplaceJokerResult::Unchanged, ReplaceJokerResult::Replaced(new_comprehension)) => ReplaceJokerResult::Replaced(Expr::ObjectComprehension { key: Arc::new(new_key), value: value.clone(), comprehension: new_comprehension }),
+                    (ReplaceJokerResult::Replaced(new_key), ReplaceJokerResult::Replaced(new_value), ReplaceJokerResult::Unchanged) => ReplaceJokerResult::Replaced(Expr::ObjectComprehension { key: Arc::new(new_key), value: Arc::new(new_value), comprehension: comprehension.clone() }),
+                    (ReplaceJokerResult::Replaced(new_key), ReplaceJokerResult::Replaced(new_value), ReplaceJokerResult::Replaced(new_comprehension)) => ReplaceJokerResult::Replaced(Expr::ObjectComprehension { key: Arc::new(new_key), value: Arc::new(new_value), comprehension: new_comprehension }),
+                }
+            },
+            Expr::Unary(unary_operator, expr) => {
+                let new_expr = expr.replace_joker_inner(replacement);
+                match new_expr {
+                    ReplaceJokerResult::Unchanged => ReplaceJokerResult::Unchanged,
+                    ReplaceJokerResult::Replaced(new_expr) => ReplaceJokerResult::Replaced(Expr::Unary(*unary_operator, Arc::new(new_expr))),
+                }
+            },
+            Expr::Binary(expr, binary_operator, expr1) => {
+                let new_expr = expr.replace_joker_inner(replacement);
+                let new_expr1 = expr1.replace_joker_inner(replacement);
+                match (new_expr, new_expr1) {
+                    (ReplaceJokerResult::Unchanged, ReplaceJokerResult::Unchanged) => ReplaceJokerResult::Unchanged,
+                    (ReplaceJokerResult::Unchanged, ReplaceJokerResult::Replaced(new_expr1)) => ReplaceJokerResult::Replaced(Expr::Binary(expr.clone(), *binary_operator, Arc::new(new_expr1))),
+                    (ReplaceJokerResult::Replaced(new_expr), ReplaceJokerResult::Unchanged) => ReplaceJokerResult::Replaced(Expr::Binary(Arc::new(new_expr), *binary_operator, expr1.clone())),
+                    (ReplaceJokerResult::Replaced(new_expr), ReplaceJokerResult::Replaced(new_expr1)) => ReplaceJokerResult::Replaced(Expr::Binary(Arc::new(new_expr), *binary_operator, Arc::new(new_expr1))),
+                }
+            },
+            Expr::CompareChain(expr, items) => {
+                let new_expr = expr.replace_joker_inner(replacement);
+                let new_items: Vec<(BinaryOperator, ReplaceJokerResult<Expr>)> = items.iter().map(|(op, e)| (*op, e.replace_joker_inner(replacement))).collect();
+                let items_unchanged = new_items.iter().all(|(_, e)| matches!(e, ReplaceJokerResult::Unchanged));
+                match (new_expr, items_unchanged) {
+                    (ReplaceJokerResult::Unchanged, true) => ReplaceJokerResult::Unchanged,
+                    (ReplaceJokerResult::Replaced(new_expr), true) => ReplaceJokerResult::Replaced(Self::CompareChain(Arc::new(new_expr), items.clone())),
+                    (new_expr, false) => {
+                        let replaced_items = new_items.into_iter().enumerate().map(|(i, (op, e))| {
+                            match e {
+                                ReplaceJokerResult::Unchanged => (op, items[i].1.clone()),
+                                ReplaceJokerResult::Replaced(new_e) => (op, new_e),
+                            }
+                        }).collect();
+                        if let ReplaceJokerResult::Replaced(new_expr) = new_expr {
+                            ReplaceJokerResult::Replaced(Self::CompareChain(Arc::new(new_expr), replaced_items))
+                        } else {
+                            ReplaceJokerResult::Replaced(Self::CompareChain(expr.clone(), replaced_items))
+                        }
+                    },
+                }
+            },
+            Expr::Ternary { then_expression, condition, else_expression } => {
+                let new_then_expression = then_expression.replace_joker_inner(replacement);
+                let new_condition = condition.replace_joker_inner(replacement);
+                let new_else_expression = else_expression.replace_joker_inner(replacement);
+                match (new_then_expression, new_condition, new_else_expression) {
+                    (ReplaceJokerResult::Unchanged, ReplaceJokerResult::Unchanged, ReplaceJokerResult::Unchanged) => ReplaceJokerResult::Unchanged,
+                    (new_then, new_cond, new_else) => {
+                        let then_expression = match new_then {
+                            ReplaceJokerResult::Unchanged => then_expression.clone(),
+                            ReplaceJokerResult::Replaced(e) => Arc::new(e),
+                        };
+                        let condition = match new_cond {
+                            ReplaceJokerResult::Unchanged => condition.clone(),
+                            ReplaceJokerResult::Replaced(e) => Arc::new(e),
+                        };
+                        let else_expression = match new_else {
+                            ReplaceJokerResult::Unchanged => else_expression.clone(),
+                            ReplaceJokerResult::Replaced(e) => Arc::new(e),
+                        };
+                        ReplaceJokerResult::Replaced(Self::Ternary { then_expression, condition, else_expression })
+                    }
+                }
+            },
+            Expr::Call(expr, args) => {
+                let new_expr = expr.replace_joker_inner(replacement);
+                let new_args: Vec<ReplaceJokerResult<Expr>> = args.iter().map(|e| e.replace_joker_inner(replacement)).collect();
+                let args_unchanged = new_args.iter().all(|e| matches!(e, ReplaceJokerResult::Unchanged));
+                match (new_expr, args_unchanged) {
+                    (ReplaceJokerResult::Unchanged, true) => ReplaceJokerResult::Unchanged,
+                    (new_expr, args_unchanged) => {
+                        let expr = match new_expr {
+                            ReplaceJokerResult::Unchanged => expr.clone(),
+                            ReplaceJokerResult::Replaced(e) => Arc::new(e),
+                        };
+                        let args: Arc<[Expr]> = if args_unchanged {
+                            args.clone().into()
+                        } else {
+                            new_args.into_iter().enumerate().map(|(i, a)| match a {
+                            ReplaceJokerResult::Unchanged => args[i].clone(),
+                            ReplaceJokerResult::Replaced(e) => e,
+                            }).collect()
+                        };
+                        ReplaceJokerResult::Replaced(Self::Call(expr, args))
+                    }
+                }
+            },
+            Expr::Get(expr, index) => {
+                let new_expr = expr.replace_joker_inner(replacement);
+                match new_expr {
+                    ReplaceJokerResult::Unchanged => ReplaceJokerResult::Unchanged,
+                    ReplaceJokerResult::Replaced(e) => ReplaceJokerResult::Replaced(Self::Get(Arc::new(e), index.clone())),
+                }
+            },
+            Expr::Index(expr, idx) => {
+                let new_expr = expr.replace_joker_inner(replacement);
+                let new_idx = idx.replace_joker_inner(replacement);
+                match (new_expr, new_idx) {
+                    (ReplaceJokerResult::Unchanged, ReplaceJokerResult::Unchanged) => ReplaceJokerResult::Unchanged,
+                    (new_expr, new_idx) => {
+                        let expr = match new_expr {
+                            ReplaceJokerResult::Unchanged => expr.clone(),
+                            ReplaceJokerResult::Replaced(e) => Arc::new(e),
+                        };
+                        let idx = match new_idx {
+                            ReplaceJokerResult::Unchanged => idx.clone(),
+                            ReplaceJokerResult::Replaced(e) => Arc::new(e),
+                        };
+                        ReplaceJokerResult::Replaced(Self::Index(expr, idx))
+                    }
+                }
+            },
+            Expr::Slice { object, start, end, step } => {
+                let new_object = object.replace_joker_inner(replacement);
+                let new_start = start.as_ref().map(|s| s.replace_joker_inner(replacement));
+                let new_end = end.as_ref().map(|e| e.replace_joker_inner(replacement));
+                let new_step = step.as_ref().map(|s| s.replace_joker_inner(replacement));
+                let start_unchanged = new_start.as_ref().map_or(true, |s| matches!(s, ReplaceJokerResult::Unchanged));
+                let end_unchanged = new_end.as_ref().map_or(true, |e| matches!(e, ReplaceJokerResult::Unchanged));
+                let step_unchanged = new_step.as_ref().map_or(true, |s| matches!(s, ReplaceJokerResult::Unchanged));
+                let object_unchanged = matches!(new_object, ReplaceJokerResult::Unchanged);
+                let unchanged = object_unchanged && start_unchanged && end_unchanged && step_unchanged;
+                if unchanged {
+                    return ReplaceJokerResult::Unchanged;
+                }
+                let object = match new_object {
+                    ReplaceJokerResult::Unchanged => object.clone(),
+                    ReplaceJokerResult::Replaced(e) => Arc::new(e),
+                };
+                let start = match new_start {
+                    Some(ReplaceJokerResult::Unchanged) => start.clone(),
+                    Some(ReplaceJokerResult::Replaced(e)) => Some(Arc::new(e)),
+                    None => None,
+                };
+                let end = match new_end {
+                    Some(ReplaceJokerResult::Unchanged) => end.clone(),
+                    Some(ReplaceJokerResult::Replaced(e)) => Some(Arc::new(e)),
+                    None => None,
+                };
+                let step = match new_step {
+                    Some(ReplaceJokerResult::Unchanged) => step.clone(),
+                    Some(ReplaceJokerResult::Replaced(e)) => Some(Arc::new(e)),
+                    None => None,
+                };
+                ReplaceJokerResult::Replaced(Self::Slice { object, start, end, step })
+            },
         }
     }
 }
@@ -3787,6 +4174,9 @@ impl std::fmt::Display for Expr {
                 if let Some(step) = step { write!(f, ":{step}")?; }
                 write!(f, "]")
             },
+            Self::Joker => {
+                write!(f, "_")
+            }
         }
     }
 }
@@ -3910,6 +4300,7 @@ pub enum Token {
     LeftShift,
     RightShift,
     LogicRightShift,
+    Joker,
 }
 
 impl std::fmt::Display for Token {
@@ -3956,6 +4347,7 @@ impl std::fmt::Display for Token {
             Token::LeftShift => write!(f, "<<"),
             Token::RightShift => write!(f, ">>"),
             Token::LogicRightShift => write!(f, ">>>"),
+            Token::Joker => write!(f, "_"),
         }
     }
 }
@@ -4328,8 +4720,12 @@ impl Tokenizer {
         if start == self.position {
             return Err(Error::Lexical { position: start, kind: LexError::ExpectedIdentifier });
         }
+        let id = self.chars[start..self.position].iter().collect();
+        if id == "_" {
+            return Ok(Token::Joker);
+        }
         Ok(Token::Identifier(
-            self.chars[start..self.position].iter().collect(),
+            id,
         ))
     }
 }
@@ -4430,11 +4826,12 @@ impl Parser {
     ) -> Result<BindingPattern> {
         let token_index = self.position;
         match self.advance().clone() {
+            Token::Joker => Ok(BindingPattern::Joker),
             Token::Identifier(name) => {
                 if is_reserved_binding(&name) || (parameter && name == "args") {
                     return Err(Error::Syntax { token_index, kind: SyntaxError::InvalidBinding { name } });
                 }
-                if name != "_" && !names.insert(name.clone()) {
+                if !names.insert(name.clone()) {
                     return Err(Error::Syntax { token_index, kind: SyntaxError::DuplicateBinding { name } });
                 }
                 Ok(BindingPattern::Name(name))
@@ -4442,6 +4839,9 @@ impl Parser {
             Token::Star if allow_rest => {
                 let token_index = self.position;
                 let found = self.advance().clone();
+                if found == Token::Joker {
+                    return Ok(BindingPattern::RestJoker);
+                }
                 let Token::Identifier(rest) = found else {
                     return Err(Error::Syntax {
                         token_index,
@@ -4451,7 +4851,7 @@ impl Parser {
                 if is_reserved_binding(&rest) || (parameter && rest == "args") {
                     return Err(Error::Syntax { token_index, kind: SyntaxError::InvalidBinding { name: rest } });
                 }
-                if rest != "_" && !names.insert(rest.clone()) {
+                if !names.insert(rest.clone()) {
                     return Err(Error::Syntax { token_index, kind: SyntaxError::DuplicateBinding { name: rest } });
                 }
                 Ok(BindingPattern::Rest { rest })
@@ -4463,7 +4863,7 @@ impl Parser {
                     loop {
                         let token_index = self.position;
                         let pattern = self.parse_binding_pattern(names, parameter, true)?;
-                        if matches!(pattern, BindingPattern::Rest { .. })
+                        if (matches!(pattern, BindingPattern::Rest { .. }) || matches!(pattern, BindingPattern::RestJoker))
                             && std::mem::replace(&mut has_rest, true)
                         {
                             return Err(Error::Syntax { token_index, kind: SyntaxError::MultipleRestPatterns });
@@ -4855,6 +5255,7 @@ impl Parser {
     fn parse_primary(&mut self) -> Result<Expr> {
         let token_index = self.position;
         match self.advance().clone() {
+            Token::Joker => Ok(Expr::Joker),
             // Recognize expression keywords wherever an operand is accepted.
             // Their bodies still consume a full expression, preserving scope.
             Token::Identifier(value) if value == "let" => self.parse_let(),
@@ -4957,7 +5358,7 @@ impl Parser {
         loop {
             let token_index = self.position;
             let target = self.parse_binding_pattern(&mut names, false, true)?;
-            if matches!(target, BindingPattern::Rest { .. })
+            if matches!(target, BindingPattern::Rest { .. } | BindingPattern::RestJoker)
                 && std::mem::replace(&mut has_rest, true)
             {
                 return Err(Error::Syntax { token_index, kind: SyntaxError::MultipleRestPatterns });

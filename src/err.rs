@@ -327,6 +327,7 @@ pub enum Error {
         value: String,
         source: ParseFloatError,
     },
+    InvalidJoker,
     /// An error explicitly raised by the formula's `error` builtin.
     User(String),
     Context {
@@ -441,6 +442,9 @@ impl Error {
                 data.insert("value".into(), EvalValue::String(value.clone().into()));
                 "InvalidFloat"
             },
+            Error::InvalidJoker => {
+                "InvalidJoker"
+            },
             Error::Context { message: _, source } => {
                 data.insert("source".into(), source.to_dict());
                 "Context"
@@ -504,6 +508,10 @@ impl fmt::Display for Error {
             Self::InvalidFloat { value, .. } => write!(
                 f,
                 "Cannot convert {value} to a number: the string is not a valid numeric representation"
+            )?,
+            Self::InvalidJoker => write!(
+                f,
+                "Invalid use of joker"
             )?,
             Self::Context { message, .. } => f.write_str(message)?,
         }

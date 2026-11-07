@@ -7,6 +7,121 @@ use crate::builtins::GLOBAL_ENV;
 use super::*;
 
 #[test]
+fn jokers_are_expressions_but_cannot_be_evaluated() {
+    let mut engine = engine();
+    let mut env = Env::new();
+    env.insert("_", EvalValue::Int(42));
+    for source in [
+        "_", "1 + _", "_ + 1", "-_", "not _", "[_]", "{'a': _}",
+        "[1][_]", "[1][_:]", "_(1)", "(fn x -> x)(_)",
+        "let _ = _ for 1", "let _ = 42 for _", "(fn _ -> _)(42)",
+    ] {
+        let ast = Parser::new(Tokenizer::new(source).tokenize().unwrap()).parse().unwrap();
+        let rendered = ast.to_string();
+        assert_eq!(Parser::new(Tokenizer::new(&rendered).tokenize().unwrap()).parse().unwrap(), ast);
+        let json = serde_json::to_string(&ExprSerializer::from(&ast)).unwrap();
+        let restored = Expr::try_from(serde_json::from_str::<ExprSerializer>(&json).unwrap()).unwrap();
+        assert_eq!(restored, ast);
+        let error = engine.evaluate(source, &env).unwrap_err();
+        assert_eq!(error.without_context(), &Error::InvalidJoker, "{source}");
+    }
+    for (source, expected) in [
+        ("_ if false else 1", EvalValue::Int(1)),
+        ("1 if true else _", EvalValue::Int(1)),
+        ("false and _", EvalValue::Bool(false)),
+        ("true or _", EvalValue::Bool(true)),
+        ("1 ?? _", EvalValue::Int(1)),
+    ] {
+        assert_eq!(engine.evaluate(source, &env).unwrap(), expected, "{source}");
+    }
+    assert_eq!(parse_next("_, suffix").unwrap(), (Expr::Joker, 1));
+    let closure = engine.evaluate("fn -> _", &env).unwrap();
+    let EvalValue::Func(function) = &closure else { panic!("expected a function") };
+    let Function::User(function) = function.as_ref() else { panic!("expected a user function") };
+    assert!(!function.captures.contains_key("_"));
+    assert_eq!(closure.call(&[], &mut engine, &Env::new()).unwrap_err().without_context(),
+        &Error::InvalidJoker);
+}
+
+#[test]
+fn joker_patterns_preserve_serialization_and_discard_values() {
+    for (pattern, saved) in [
+        (BindingPattern::Joker, serde_json::json!("_")),
+        (BindingPattern::RestJoker, serde_json::json!({"rest": "_"})),
+        (BindingPattern::List(vec![BindingPattern::Joker, BindingPattern::RestJoker]),
+            serde_json::json!(["_", {"rest": "_"}])),
+    ] {
+        assert_eq!(serde_json::to_value(&pattern).unwrap(), saved);
+        assert_eq!(serde_json::from_value::<BindingPattern>(saved).unwrap(), pattern);
+    }
+    for (name, expected) in [("_", BindingPattern::Joker), ("*_", BindingPattern::RestJoker)] {
+        assert_eq!(BindingPattern::from(name), expected);
+        assert_eq!(BindingPattern::from(name.to_owned()), expected);
+        assert_eq!(BindingPattern::from(Arc::<str>::from(name)), expected);
+    }
+    let mut engine = engine();
+    for (source, expected) in [
+        ("let [*_, last] = [1, 2, 3] for last", "3"),
+        ("let [*_, last] = [1] for last", "1"),
+        ("let [first, *_] = [1, 2, 3] for first", "1"),
+        ("let [first, *_, last] = [1, 2] for [first, last]", "[1, 2]"),
+        ("let [*_] = [] for exists('_')", "false"),
+        ("let [*_] = [1, 2] for exists('_')", "false"),
+        ("let _ = 1, _ = 2 for exists('_')", "false"),
+        ("(fn _, _ -> exists('_'))(1, 2)", "false"),
+        ("(fn [_, *_, last] -> last)([1, 2, 3, 4])", "4"),
+        ("[last for *_, last in [[1], [1, 2, 3]]]", "[1, 3]"),
+        ("[first for first, *_ in [[1], [2, 3, 4]]]", "[1, 2]"),
+        ("[exists('_') for _ in [1, 2]]", "[false, false]"),
+    ] {
+        let ast = Parser::new(Tokenizer::new(source).tokenize().unwrap()).parse().unwrap();
+        let json = serde_json::to_string(&ExprSerializer::from(&ast)).unwrap();
+        let restored = Expr::try_from(serde_json::from_str::<ExprSerializer>(&json).unwrap()).unwrap();
+        assert_eq!(restored, ast);
+        let expected = engine.evaluate(expected, &Env::new()).unwrap();
+        assert_eq!(engine.evalexpr(&restored, &Env::new()).unwrap(), expected, "{source}");
+        assert_eq!(engine.evaluate(&restored.to_string(), &Env::new()).unwrap(), expected, "{source}");
+    }
+}
+
+#[test]
+fn joker_rest_patterns_obey_shape_and_syntax_rules() {
+    use crate::err::SyntaxError;
+
+    for source in [
+        "let [*_, *_] = [] for 1", "fn [*_, *rest] -> 1",
+        "[1 for *_, *_ in []]", "[1 for *_, *rest in []]",
+        "[1 for *rest, *_ in []]",
+    ] {
+        for error in [validate_formula_syntax(source).unwrap_err(), parse_next(source).unwrap_err()] {
+            assert!(matches!(error.without_context(), Error::Syntax {
+                kind: SyntaxError::MultipleRestPatterns, ..
+            }), "{source}: {error:#}");
+        }
+    }
+    for source in ["let *_ = [] for 1", "fn *_ -> 1", "[1 for *_ in []]"] {
+        assert!(validate_formula_syntax(source).is_err(), "{source}");
+        assert!(parse_next(source).is_err(), "{source}");
+    }
+    for source in ["let [first, *_, last] = [1] for last", "(fn [_, *_] -> 1)([])"] {
+        let error = engine().evaluate(source, &Env::new()).unwrap_err();
+        assert!(matches!(error.without_context(), Error::InvalidArgument(_)), "{source}: {error:#}");
+    }
+}
+
+#[test]
+fn underscore_is_reserved_but_longer_identifiers_and_string_keys_work() {
+    assert_eq!(Tokenizer::new("_ _name name_ __").tokenize().unwrap(), vec![
+        Token::Joker, Token::Identifier("_name".into()),
+        Token::Identifier("name_".into()), Token::Identifier("__".into()), Token::End,
+    ]);
+    assert!(validate_formula_syntax("{'_': 1}._").is_err());
+    assert_eq!(engine().evaluate("{'_': 1}['_']", &Env::new()).unwrap(), EvalValue::Int(1));
+    assert_eq!(engine().evaluate("let _name = 1, name_ = 2, __ = 3 for _name + name_ + __",
+        &Env::new()).unwrap(), EvalValue::Int(6));
+}
+
+#[test]
 fn rest_patterns_bind_prefixes_suffixes_and_nested_lists() {
     let mut engine = engine();
     let env = Env::new();
@@ -297,7 +412,7 @@ fn evaluation_errors_are_matchable_without_parsing_messages() {
     ));
     assert!(matches!(
         engine.evaluate("error('custom failure')", &env).unwrap_err().without_context(),
-        Error::User(message) if message == "custom failure"
+        Error::User(message) if message == "\"custom failure\""
     ));
     assert!(matches!(
         engine.evaluate("missing_name", &env).unwrap_err().without_context(),
@@ -1355,7 +1470,7 @@ fn incomplete_keyword_operands_are_syntax_errors() {
             engine
                 .format("$name has ${count + 1} items and $$3.".into(), &env)
                 .unwrap(),
-            "Violet has 8 items and $3.".into()
+            "\"Violet\" has 8 items and $3.".into()
         );
     }
 
@@ -1488,7 +1603,7 @@ fn incomplete_keyword_operands_are_syntax_errors() {
                     &Env::new()
                 )
                 .unwrap(),
-            "Result: }.".into()
+            "Result: \"}\".".into()
         );
         assert_eq!(
             full_formula("${{'a': 1} + {'b': 2}}"),

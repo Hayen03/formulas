@@ -363,7 +363,7 @@ The results are `10` and `5`. A binding pattern is a name or a nested list of pa
 
 Discarding a value does not skip its evaluation: `let _ = error('failed') for 0` still raises an error. Surrounding list patterns still enforce their type and length requirements, and discarded function parameters still count toward the minimum argument count and remain in `args`.
 
-`_` creates no binding and does not shadow an existing variable named `_`. Outside a pattern, `_` is an ordinary variable reference. Thus `let _ = 8 for _` returns an existing outer `_`, or fails if none is defined. `$_` has the same meaning as `_`, including in patterns; names such as `_value` are ordinary names.
+`_` creates no binding and does not shadow an existing variable named `_`. Outside a pattern, `_` is a special expression that cannot be evaluated, but can be used as a placeholder in certain contexts, mostly for programs that use the engine. Thus `let _ = 8 for _` will fail. Joker expression can be replaced by other expression. Names such as `_value` are ordinary names.
 
 Inside a list pattern, `*name` captures the remaining elements as a list, possibly empty. It may appear at the beginning, middle, or end: elements before it match the prefix, and elements after it match the suffix. Each list level allows at most one rest capture. The input must contain enough elements for all non-rest patterns. Use `*_` to discard the remaining elements. The capture must be a name, not another pattern.
 
