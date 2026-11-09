@@ -5853,6 +5853,7 @@ use rand::{Rng, RngExt};
     ) -> Result<EvalValue> {
         minmax(&arguments, Ordering::Greater)
     }
+    /*
     pub fn fn_str(
         arguments: &[EvalValue],
         formula: &mut FormulaEngine,
@@ -5885,6 +5886,7 @@ use rand::{Rng, RngExt};
         expect_arity("bool", &arguments, 1)?;
         Ok(EvalValue::Bool(arguments[0].truthy()))
     }
+    */
     pub fn zip(
         arguments: &[EvalValue],
         formula: &mut FormulaEngine,
@@ -5915,6 +5917,7 @@ use rand::{Rng, RngExt};
             _ => bail!(Type, "len requires a list, dictionary, or string"),
         }
     }
+    /*
     pub fn fn_type(
         arguments: &[EvalValue],
         formula: &mut FormulaEngine,
@@ -5923,6 +5926,7 @@ use rand::{Rng, RngExt};
         expect_arity("type", &arguments, 1)?;
         Ok(EvalValue::Type(arguments[0].value_type()))
     }
+    */
     /// Tests if there is a variable with the name given as the argument within the environment.
     pub fn exists(
         arguments: &[EvalValue],
@@ -6152,9 +6156,13 @@ use rand::{Rng, RngExt};
     ) -> Result<EvalValue> {
         expect_arity("genlist", arguments, 2)?;
         let n = match &arguments[0] {
-            EvalValue::Int(n) => *n as usize,
+            EvalValue::Int(n) => *n,
             _ => bail!(Type, "genlist requires an integer as its first argument"),
         };
+        if n < 0 {
+            return Err(Error::InvalidArgument("genlist requires a non-negative integer as its first argument".into()));
+        }
+        let n = n as usize;
         let f = &arguments[1];
 
         let mut list = Vec::with_capacity(n);
@@ -8479,22 +8487,132 @@ use rand::{Rng, RngExt};
         Ok(EvalValue::Float(x.fract()))
     }
 
+    /////////// TYPE METHODS \\\\\\\\\\\\\
+    pub static T_INT_METHODS: Lazy<Arc<IndexMap<Arc<str>, EvalValue>>> = Lazy::new(|| {
+        let mut map = IndexMap::new();
+        build_dict(&mut map, "inttype", "min", t_int_min);
+        build_dict(&mut map, "inttype", "max", t_int_max);
+        Arc::new(map)
+    });
+    pub static T_FLOAT_METHODS: Lazy<Arc<IndexMap<Arc<str>, EvalValue>>> = Lazy::new(|| {
+        let mut map = IndexMap::new();
+        build_dict(&mut map, "floattype", "pi", t_float_pi);
+        build_dict(&mut map, "floattype", "e", t_float_e);
+        build_dict(&mut map, "floattype", "eps", t_float_eps);
+        build_dict(&mut map, "floattype", "inf", t_float_inf);
+        build_dict(&mut map, "floattype", "nan", t_float_nan);
+        build_dict(&mut map, "floattype", "min", t_float_min);
+        build_dict(&mut map, "floattype", "max", t_float_max);
+        Arc::new(map)
+    });
+    pub static T_STR_METHODS: Lazy<Arc<IndexMap<Arc<str>, EvalValue>>> = Lazy::new(|| {
+        let mut map = IndexMap::new();
+        Arc::new(map)
+    });
+    pub static T_BOOL_METHODS: Lazy<Arc<IndexMap<Arc<str>, EvalValue>>> = Lazy::new(|| {
+        let mut map = IndexMap::new();
+        Arc::new(map)
+    });
+    pub static T_LIST_METHODS: Lazy<Arc<IndexMap<Arc<str>, EvalValue>>> = Lazy::new(|| {
+        let mut map = IndexMap::new();
+        build_dict(&mut map, "listtype", "gen", t_list_gen);
+        Arc::new(map)
+    });
+    pub static T_DICT_METHODS: Lazy<Arc<IndexMap<Arc<str>, EvalValue>>> = Lazy::new(|| {
+        let mut map = IndexMap::new();
+        Arc::new(map)
+    });
+    pub static T_NULL_METHODS: Lazy<Arc<IndexMap<Arc<str>, EvalValue>>> = Lazy::new(|| {
+        let mut map = IndexMap::new();
+        Arc::new(map)
+    });
+    pub static T_TYPE_METHODS: Lazy<Arc<IndexMap<Arc<str>, EvalValue>>> = Lazy::new(|| {
+        let mut map = IndexMap::new();
+        Arc::new(map)
+    });
+    pub static T_METHODS: Lazy<IndexMap<EvalType, Arc<IndexMap<Arc<str>, EvalValue>>>> = Lazy::new(|| {
+        let mut map = IndexMap::new();
+        map.insert(EvalType::Int, Arc::clone(&T_INT_METHODS));
+        map.insert(EvalType::Float, Arc::clone(&T_FLOAT_METHODS));
+        map.insert(EvalType::Str, Arc::clone(&T_STR_METHODS));
+        map.insert(EvalType::Bool, Arc::clone(&T_BOOL_METHODS));
+        map.insert(EvalType::List, Arc::clone(&T_LIST_METHODS));
+        map.insert(EvalType::Dict, Arc::clone(&T_DICT_METHODS));
+        map.insert(EvalType::Null, Arc::clone(&T_NULL_METHODS));
+        map.insert(EvalType::Type, Arc::clone(&T_TYPE_METHODS));
+        map
+    });
+
+    pub fn t_float_pi(arguments: &[EvalValue], _engine: &mut FormulaEngine, _env: &Env) -> Result<EvalValue> {
+        expect_arity("pi", arguments, 1)?;
+        Ok(EvalValue::Float(std::f64::consts::PI))
+    }
+    pub fn t_float_e(arguments: &[EvalValue], _engine: &mut FormulaEngine, _env: &Env) -> Result<EvalValue> {
+        expect_arity("e", arguments, 1)?;
+        Ok(EvalValue::Float(std::f64::consts::E))
+    }
+    pub fn t_float_eps(arguments: &[EvalValue], _engine: &mut FormulaEngine, _env: &Env) -> Result<EvalValue> {
+        expect_arity("eps", arguments, 1)?;
+        Ok(EvalValue::Float(f64::EPSILON))
+    }
+    pub fn t_float_inf(arguments: &[EvalValue], _engine: &mut FormulaEngine, _env: &Env) -> Result<EvalValue> {
+        expect_arity("inf", arguments, 1)?;
+        Ok(EvalValue::Float(f64::INFINITY))
+    }
+    pub fn t_float_nan(arguments: &[EvalValue], _engine: &mut FormulaEngine, _env: &Env) -> Result<EvalValue> {
+        expect_arity("nan", arguments, 1)?;
+        Ok(EvalValue::Float(f64::NAN))
+    }
+    pub fn t_float_min(arguments: &[EvalValue], _engine: &mut FormulaEngine, _env: &Env) -> Result<EvalValue> {
+        expect_arity("min", arguments, 1)?;
+        Ok(EvalValue::Float(f64::MIN))
+    }
+    pub fn t_float_max(arguments: &[EvalValue], _engine: &mut FormulaEngine, _env: &Env) -> Result<EvalValue> {
+        expect_arity("max", arguments, 1)?;
+        Ok(EvalValue::Float(f64::MAX))
+    }
+    pub fn t_int_min(arguments: &[EvalValue], _engine: &mut FormulaEngine, _env: &Env) -> Result<EvalValue> {
+        expect_arity("min", arguments, 1)?;
+        Ok(EvalValue::Int(i64::MIN))
+    }
+    pub fn t_int_max(arguments: &[EvalValue], _engine: &mut FormulaEngine, _env: &Env) -> Result<EvalValue> {
+        expect_arity("max", arguments, 1)?;
+        Ok(EvalValue::Int(i64::MAX))
+    }
+    // TODO gen for lists
+    pub fn t_list_gen(arguments: &[EvalValue], engine: &mut FormulaEngine, env: &Env) -> Result<EvalValue> {
+        expect_arity("gen", arguments, 3)?;
+        let EvalValue::Int(n) = arguments[1] else {
+            return Err(Error::InvalidArgument("gen expects a positive integer as its second argument".into()));
+        };
+        if n < 0 {
+            return Err(Error::InvalidArgument("gen expects a positive integer as its second argument".into()));
+        }
+        let EvalValue::Func(func) = &arguments[2] else {
+            return Err(Error::InvalidArgument("gen expects a function as its third argument".into()));
+        };
+        let mut result = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            let arg = EvalValue::Int(i);
+            let val = EvalValue::Func(func.clone()).call(&[arg], engine, env)?;
+            result.push(val);
+        }
+        Ok(EvalValue::Array(result.into()))
+    }
+
     pub static ALL_BUILTINS: Lazy<IndexMap<Arc<str>, EvalValue>> = Lazy::new(|| {
         let mut map = IndexMap::new();
-        // Retain identities used by saved builtin functions from before types were values.
-        for (name, function) in [
-            ("str", fn_str as fn(&[EvalValue], &mut FormulaEngine, &Env) -> Result<EvalValue>),
-            ("int", int), ("float", float), ("bool", fn_bool), ("type", fn_type),
-        ] {
-            let (key, value) = EvalValue::func(name, function);
-            map.insert(key, value);
-        }
         insert_registry(&mut map, &GLOBAL_ENV.vars);
         insert_registry(&mut map, &ARRAY_METHODS);
         insert_registry(&mut map, &OBJECT_METHODS);
         insert_registry(&mut map, &STRING_METHODS);
         insert_registry(&mut map, &INT_METHODS);
         insert_registry(&mut map, &FLOAT_METHODS);
+        // insert type static methods
+        for dict in T_METHODS.values() {
+            insert_registry(&mut map, dict);
+        }
         map
     });
+    
 }
