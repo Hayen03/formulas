@@ -4,7 +4,7 @@
 //! dynamically typed through [`EvalValue`] and uses the deterministic RNG owned by
 //! [`FormulaEngine`]. Strings returned by formulas are not recursively evaluated unless
 //! they are passed through a later explicit resolution step.
-use crate::builtins::GLOBAL_ENV;
+use crate::builtins::{GLOBAL_ENV, T_METHODS};
 use crate::err::{bail, error, ArgumentCount, Error, LexError, Result, ResultContext, SyntaxError};
 use indexmap::{IndexMap, IndexSet};
 use rand::{Rng, SeedableRng, RngExt};
@@ -724,6 +724,9 @@ impl EvalValue {
             Self::String(_) => Some(&*builtins::STRING_METHODS),
             Self::Int(_) => Some(&*builtins::INT_METHODS),
             Self::Float(_) => Some(&*builtins::FLOAT_METHODS),
+            Self::Type(t) => {
+                T_METHODS.get(t).map(|reg| &**reg)
+            },
             _ => None,
         }
     }
