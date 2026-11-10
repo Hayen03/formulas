@@ -174,7 +174,7 @@ impl EvalValue {
                 state.write_u8(6);
                 // Hash each key-value pair in the object.
                 let mut pairs: Vec<_> = obj.iter().collect(); 
-                pairs.sort_by(|(k1, _), (k2, _)| k1.0.total_cmp(&k2.0));
+                pairs.sort_by(|(k1, _), (k2, _)| k1.0.total_strict_cmp(&k2.0));
                 for (key, value) in pairs {
                     key.hash(state);
                     value.hash(state);
@@ -1296,6 +1296,74 @@ impl EvalValue {
             (EvalValue::Type(a), EvalValue::Type(b)) => a.cmp(b),
         }
     }
+    /// similar to `total_cmp` but with stricter rules for numbers and bools
+    /// 
+    /// Values of different types are compared according to a predefined ordering:
+    /// null < bool < float < int < string < array < dict < func
+    pub fn total_strict_cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (EvalValue::Int(a), EvalValue::Int(b)) => a.cmp(b),
+            (EvalValue::Float(a), EvalValue::Float(b)) => {
+                if a.is_nan() && b.is_nan() {
+                    Ordering::Equal
+                } else if *a == 0.0 && *b == 0.0 {
+                    Ordering::Equal
+                } else {
+                    a.total_cmp(b)
+                }
+            },
+            (EvalValue::Bool(a), EvalValue::Bool(b)) => a.cmp(b),
+            (EvalValue::Null, EvalValue::Null) => Ordering::Equal,
+            (EvalValue::Array(a), EvalValue::Array(b)) => {
+                let len_cmp = a.len().cmp(&b.len());
+                if len_cmp != Ordering::Equal {
+                    return len_cmp;
+                }
+                for (item_a, item_b) in a.iter().zip(b.iter()) {
+                    let cmp = item_a.total_strict_cmp(item_b);
+                    if cmp != Ordering::Equal {
+                        return cmp;
+                    }
+                }
+                Ordering::Equal
+            },
+            (EvalValue::Object(a), EvalValue::Object(b)) => {
+                let mut entries_a: Vec<_> = a.iter().collect();
+                let mut entries_b: Vec<_> = b.iter().collect();
+                entries_a.sort_by(|(k1, _), (k2, _)| k1.0.total_strict_cmp(&k2.0));
+                entries_b.sort_by(|(k1, _), (k2, _)| k1.0.total_strict_cmp(&k2.0));
+                for ((k1, v1), (k2, v2)) in entries_a.iter().zip(entries_b.iter()) {
+                    let key_cmp = k1.0.total_strict_cmp(&k2.0);
+                    if key_cmp != Ordering::Equal {
+                        return key_cmp;
+                    }
+                    let value_cmp = v1.total_strict_cmp(v2);
+                    if value_cmp != Ordering::Equal {
+                        return value_cmp;
+                    }
+                }
+                entries_a.len().cmp(&entries_b.len())
+            },
+            (EvalValue::Null, _) => Ordering::Less,
+            (_, EvalValue::Null) => Ordering::Greater,
+            (EvalValue::Bool(_), _) => Ordering::Less,
+            (_, EvalValue::Bool(_)) => Ordering::Greater,
+            (EvalValue::Float(_), _) => Ordering::Less,
+            (_, EvalValue::Float(_)) => Ordering::Greater,
+            (EvalValue::Int(_), _) => Ordering::Less,
+            (_, EvalValue::Int(_)) => Ordering::Greater,
+            (EvalValue::String(_), _) => Ordering::Less,
+            (_, EvalValue::String(_)) => Ordering::Greater,
+            (EvalValue::Array(_), _) => Ordering::Less,
+            (_, EvalValue::Array(_)) => Ordering::Greater,
+            (EvalValue::Object(_), _) => Ordering::Less,
+            (_, EvalValue::Object(_)) => Ordering::Greater,
+            (EvalValue::Func(_), EvalValue::Func(_)) => Ordering::Equal,
+            (EvalValue::Func(_), EvalValue::Type(_)) => Ordering::Less,
+            (EvalValue::Type(_), EvalValue::Func(_)) => Ordering::Greater,
+            (EvalValue::Type(a), EvalValue::Type(b)) => a.cmp(b),
+        }
+    }
     /// Strict equality comparison.
     /// Returns true if `self` and `other` are of the same type and have the same value.
     pub fn strict_eq(&self, other: &EvalValue) -> bool {
@@ -1378,9 +1446,9 @@ impl EvalValue {
                     return false;
                 }
                 let mut sorted_a: Vec<_> = a.iter().collect();
-                sorted_a.sort_by(|(key_a, _), (key_b, _)| key_a.0.total_cmp(&key_b.0));
+                sorted_a.sort_by(|(key_a, _), (key_b, _)| key_a.0.total_strict_cmp(&key_b.0));
                 let mut sorted_b: Vec<_> = b.iter().collect();
-                sorted_b.sort_by(|(key_a, _), (key_b, _)| key_a.0.total_cmp(&key_b.0));
+                sorted_b.sort_by(|(key_a, _), (key_b, _)| key_a.0.total_strict_cmp(&key_b.0));
                 for ((key_a, value_a), (key_b, value_b)) in sorted_a.into_iter().zip(sorted_b.into_iter()) {
                     if key_a != key_b || !value_a.total_strict_eq(value_b) {
                         return false;
