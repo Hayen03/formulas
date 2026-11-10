@@ -76,8 +76,7 @@ fn callable_types_convert_values_and_report_errors() {
         let expected = engine.evaluate(expected, &Env::new()).unwrap();
         assert_eq!(engine.evaluate(source, &Env::new()).unwrap(), expected, "{source}");
     }
-    for source in ["int([])", "list(1)", "dict([1])", "dict([[1, 2]])",
-        "dict([['a']])", "func(int)", "type(null)(1)"] {
+    for source in ["int([])", "list(1)", "dict([1])", "dict([['a']])", "func(int)", "type(null)(1)"] {
         let error = engine.evaluate(source, &Env::new()).unwrap_err();
         assert!(matches!(error.without_context(), Error::Type(_)), "{source}: {error:#}");
     }
@@ -1702,14 +1701,14 @@ fn let_expressions_are_scoped_and_sequential() {
 fn dictionary_expressions_and_comprehensions() {
     let mut engine = engine();
     let mut numbers = IndexMap::new();
-    numbers.insert("one".into(), EvalValue::Int(1));
-    numbers.insert("two".into(), EvalValue::Int(2));
+    numbers.insert(EvalKey("one".into()), EvalValue::Int(1));
+    numbers.insert(EvalKey("two".into()), EvalValue::Int(2));
     let mut env = Env::new();
     env.insert("nums", EvalValue::Object(numbers.into()));
 
     let mut expected_merge = IndexMap::new();
-    expected_merge.insert("a".into(), EvalValue::Int(3));
-    expected_merge.insert("b".into(), EvalValue::Int(2));
+    expected_merge.insert(EvalKey("a".into()), EvalValue::Int(3));
+    expected_merge.insert(EvalKey("b".into()), EvalValue::Int(2));
     assert_eq!(
         engine
             .evaluate("{'a': 1} + {'b': 2, 'a': 3}", &env)
@@ -1721,7 +1720,7 @@ fn dictionary_expressions_and_comprehensions() {
         engine
             .evaluate("{key: val + 1 for key, val in nums if val > 1}", &env)
             .unwrap(),
-        EvalValue::Object(IndexMap::from([("two".into(), EvalValue::Int(3),)]).into())
+        EvalValue::Object(IndexMap::from([(EvalKey("two".into()), EvalValue::Int(3),)]).into())
     );
 }
 
@@ -1753,7 +1752,7 @@ fn dictionary_formulas_are_delimited_correctly() {
             .unwrap(),
         EvalValue::Object(
             IndexMap::from([(
-                "formule".into(),
+                EvalKey("formule".into()),
                 EvalValue::String("${id == 'record' and target == $target}".into()),
             )])
             .into()
@@ -1765,7 +1764,7 @@ fn dictionary_formulas_are_delimited_correctly() {
             .unwrap(),
         EvalValue::Object(
             IndexMap::from([(
-                "formule".into(),
+                EvalKey("formule".into()),
                 EvalValue::String("${id == \"record\"}".into()),
             )])
             .into()
@@ -1788,23 +1787,33 @@ fn test_type_conversion() {
 }
 
 #[test]
-    fn test_static_methods() {
-        let mut engine = engine();
-        let env = Env::new();
-        assert_eq!(
-            engine.evaluate("int.min()", &env),
-            Ok(EvalValue::Int(i64::MIN)),
-        );
-        assert_eq!(
-            engine.evaluate("int.max()", &env),
-            Ok(EvalValue::Int(i64::MAX)),
-        );
-        assert_eq!(
-            engine.evaluate("float.min()", &env),
-            Ok(EvalValue::Float(f64::MIN)),
-        );
-        assert_eq!(
-            engine.evaluate("float.max()", &env),
-            Ok(EvalValue::Float(f64::MAX)),
-        );
-    }
+fn test_static_methods() {
+    let mut engine = engine();
+    let env = Env::new();
+    assert_eq!(
+        engine.evaluate("int.min()", &env),
+        Ok(EvalValue::Int(i64::MIN)),
+    );
+    assert_eq!(
+        engine.evaluate("int.max()", &env),
+        Ok(EvalValue::Int(i64::MAX)),
+    );
+    assert_eq!(
+        engine.evaluate("float.min()", &env),
+        Ok(EvalValue::Float(f64::MIN)),
+    );
+    assert_eq!(
+        engine.evaluate("float.max()", &env),
+        Ok(EvalValue::Float(f64::MAX)),
+    );
+}
+
+#[test]
+fn test_dict_key_of_various_type() {
+    let mut engine = engine();
+    let env = Env::new();
+    assert_eq!(
+        engine.evaluate("let d = {45: 'a'} for d[45]", &env),
+        Ok(EvalValue::String("a".into()))
+    )
+}

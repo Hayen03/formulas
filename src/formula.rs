@@ -87,7 +87,7 @@ impl EvalType {
                 text.chars().map(|ch| EvalValue::String(ch.to_string().into())).collect(),
             )),
             (Self::List, EvalValue::Object(entries)) => Ok(EvalValue::Array(
-                entries.keys().cloned().map(EvalValue::String).collect(),
+                entries.keys().cloned().map(|key| key.0).collect(),
             )),
             (Self::Dict, EvalValue::Array(entries)) => {
                 let mut result = IndexMap::new();
@@ -95,10 +95,10 @@ impl EvalType {
                     let EvalValue::Array(pair) = entry else {
                         bail!(Type, "dict requires a list of [key, value] pairs");
                     };
-                    let [EvalValue::String(key), value] = pair.as_ref() else {
-                        bail!(Type, "dict requires [key, value] pairs with string keys");
+                    let [key, value] = pair.as_ref() else {
+                        bail!(Type, "dict requires [key, value] pairs");
                     };
-                    result.insert(key.clone(), value.clone());
+                    result.insert(EvalKey(key.clone()), value.clone());
                 }
                 Ok(EvalValue::Object(Arc::new(result)))
             }
@@ -115,6 +115,77 @@ impl std::fmt::Display for EvalType {
         } else {
             f.write_str(self.name())
         }
+    }
+}
+
+/// A wrapper around `EvalValue` used as a key in hash maps, ensuring proper hashing and equality semantics.
+/// It ensure that NaN values are equal to each other and that the hashing and equality semantics are consistent with the intended behavior for use as keys in hash maps.
+/// Also that +0.0 == -0.0 for hashing and equality purposes.
+#[derive(Debug, Clone, Hash)]
+pub struct EvalKey(pub EvalValue);
+
+impl PartialEq for EvalKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.total_strict_eq(&other.0)
+    }
+}
+impl Eq for EvalKey {}
+impl std::hash::Hash for EvalValue {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            EvalValue::Null => {
+                state.write_u8(0);
+            }
+            EvalValue::Bool(b) => {
+                state.write_u8(1);
+                b.hash(state);
+            }
+            EvalValue::Int(i) => {
+                state.write_u8(2);
+                i.hash(state);
+            }
+            EvalValue::Float(f) => {
+                state.write_u8(3);
+                if f.is_nan() {
+                    f64::NAN.to_bits().hash(state);
+                } else if *f == 0.0 { // for +0.0 and -0.0
+                    0.0f64.to_bits().hash(state);
+                } else {
+                    f.to_bits().hash(state);
+                }
+            }
+            EvalValue::String(s) => {
+                state.write_u8(4);
+                s.hash(state);
+            }
+            EvalValue::Array(arr) => {
+                state.write_u8(5);
+                arr.hash(state);
+            }
+            EvalValue::Object(obj) => {
+                state.write_u8(6);
+                // Hash each key-value pair in the object.
+                let mut pairs: Vec<_> = obj.iter().collect(); 
+                pairs.sort_by(|(k1, _), (k2, _)| k1.0.total_cmp(&k2.0));
+                for (key, value) in pairs {
+                    key.hash(state);
+                    value.hash(state);
+                }
+            }
+            EvalValue::Func(func) => {
+                state.write_u8(7);
+                Arc::as_ptr(func).hash(state);
+            }
+            EvalValue::Type(t) => {
+                state.write_u8(8);
+                t.hash(state);
+            }
+        }
+    }
+}
+impl std::fmt::Display for EvalKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.repr())
     }
 }
 
@@ -154,7 +225,7 @@ pub enum EvalValue {
     Float(f64),
     String(Arc<str>),
     Array(Arc<[EvalValue]>),
-    Object(Arc<IndexMap<Arc<str>, EvalValue>>),
+    Object(Arc<IndexMap<EvalKey, EvalValue>>),
     Func(Arc<Function>),
     Type(EvalType),
 }
@@ -357,7 +428,7 @@ impl std::fmt::Display for EvalValue {
             EvalValue::Object(values) => {
                 let strings: Vec<String> = values
                     .iter()
-                    .map(|(k, v)| format!("\"{}\": {}", k, v))
+                    .map(|(k, v)| format!("\"{}\": {}", &k.0, v))
                     .collect();
                 write!(f, "{{{}}}", strings.join(", "))
             }
@@ -423,7 +494,7 @@ pub enum EvalValueSerializer {
     NegInf,
     String(String),
     Array(Box<[EvalValueSerializer]>),
-    Object(Box<IndexMap<String, EvalValueSerializer>>),
+    Object(Box<IndexMap<EvalValueSerializer, EvalValueSerializer>>),
     Func(Box<FunctionSerializer>),
     Type(EvalType),
 }
@@ -453,10 +524,10 @@ impl From<&EvalValue> for EvalValueSerializer {
                 EvalValueSerializer::Array(serialized_arr)
             }
             EvalValue::Object(obj) => {
-                let serialized_obj: Box<IndexMap<String, EvalValueSerializer>> =
+                let serialized_obj: Box<IndexMap<EvalValueSerializer, EvalValueSerializer>> =
                     obj.iter()
-                        .map(|(k, v)| (k.to_string(), EvalValueSerializer::from(v)))
-                        .collect::<IndexMap<String, EvalValueSerializer>>().into();
+                        .map(|(k, v)| (EvalValueSerializer::from(&k.0), EvalValueSerializer::from(v)))
+                        .collect::<IndexMap<EvalValueSerializer, EvalValueSerializer>>().into();
                 EvalValueSerializer::Object(serialized_obj)
             }
             EvalValue::Func(func) => EvalValueSerializer::Func(Box::new(FunctionSerializer::from(func.as_ref()))),
@@ -483,10 +554,10 @@ impl TryFrom<EvalValueSerializer> for EvalValue {
                 EvalValue::Array(deserialized_arr)
             }
             EvalValueSerializer::Object(obj) => {
-                let deserialized_obj: Arc<IndexMap<Arc<str>, EvalValue>> =
+                let deserialized_obj: Arc<IndexMap<EvalKey, EvalValue>> =
                     obj.into_iter()
-                        .map(|(k, v)| Ok((Arc::from(k.as_str()), EvalValue::try_from(v)?)))
-                        .collect::<Result<IndexMap<Arc<str>, EvalValue>, crate::err::Error>>()?.into();
+                        .map(|(k, v)| Ok((EvalKey(EvalValue::try_from(k)?), EvalValue::try_from(v)?)))
+                        .collect::<Result<IndexMap<EvalKey, EvalValue>, crate::err::Error>>()?.into();
                 EvalValue::Object(deserialized_obj)
             }
             EvalValueSerializer::Func(func) => {
@@ -494,6 +565,92 @@ impl TryFrom<EvalValueSerializer> for EvalValue {
                 EvalValue::Func(Arc::new(func))
             }
         })
+    }
+}
+
+impl PartialEq for EvalValueSerializer {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (EvalValueSerializer::Null, EvalValueSerializer::Null) => true,
+            (EvalValueSerializer::Bool(a), EvalValueSerializer::Bool(b)) => a == b,
+            (EvalValueSerializer::Int(a), EvalValueSerializer::Int(b)) => a == b,
+            (EvalValueSerializer::Float(a), EvalValueSerializer::Float(b)) => a.total_cmp(b) == std::cmp::Ordering::Equal,
+            (EvalValueSerializer::Nan, EvalValueSerializer::Nan) => true,
+            (EvalValueSerializer::PosInf, EvalValueSerializer::PosInf) => true,
+            (EvalValueSerializer::NegInf, EvalValueSerializer::NegInf) => true,
+            (EvalValueSerializer::Type(a), EvalValueSerializer::Type(b)) => a == b,
+            (EvalValueSerializer::String(a), EvalValueSerializer::String(b)) => a == b,
+            (EvalValueSerializer::Array(a), EvalValueSerializer::Array(b)) => a == b,
+            (EvalValueSerializer::Object(a), EvalValueSerializer::Object(b)) => {
+                if a.len() != b.len() {
+                    return false;
+                }
+                for (key, value) in a.iter() {
+                    match b.get(key) {
+                        Some(other_value) if value == other_value => continue,
+                        _ => return false,
+                    }
+                }
+                true
+            },
+            (EvalValueSerializer::Func(_a), EvalValueSerializer::Func(_b)) => false, // functions loses their identity once serialized. Using them as key is unreliable.
+            _ => false,
+        }
+    }
+}
+impl Eq for EvalValueSerializer {}
+impl std::hash::Hash for EvalValueSerializer {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            EvalValueSerializer::Null => {
+                state.write_u8(0);
+            }
+            EvalValueSerializer::Bool(value) => {
+                state.write_u8(1);
+                state.write_u8(*value as u8);
+            }
+            EvalValueSerializer::Int(value) => {
+                state.write_u8(2);
+                state.write_i64(*value);
+            }
+            EvalValueSerializer::Float(value) => {
+                state.write_u8(3);
+                state.write_u64(value.to_bits());
+            }
+            EvalValueSerializer::Nan => {
+                state.write_u8(4);
+            }
+            EvalValueSerializer::PosInf => {
+                state.write_u8(5);
+            }
+            EvalValueSerializer::NegInf => {
+                state.write_u8(6);
+            }
+            EvalValueSerializer::Type(value) => {
+                state.write_u8(7);
+                value.hash(state);
+            }
+            EvalValueSerializer::String(value) => {
+                state.write_u8(8);
+                value.hash(state);
+            }
+            EvalValueSerializer::Array(value) => {
+                state.write_u8(9);
+                for item in value {
+                    item.hash(state);
+                }
+            }
+            EvalValueSerializer::Object(value) => {
+                state.write_u8(10);
+                for (key, val) in value.iter() {
+                    key.hash(state);
+                    val.hash(state);
+                }
+            }
+            EvalValueSerializer::Func(_) => {
+                state.write_u8(11);
+            }
+        }
     }
 }
 
@@ -632,7 +789,7 @@ impl EvalValue {
                 "{{{}}}",
                 values
                     .iter()
-                    .map(|(key, value)| format!("'{key}': {}", value.repr()))
+                    .map(|(key, value)| format!("{key}: {}", value.repr()))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
@@ -686,7 +843,7 @@ impl EvalValue {
         member: &EvalValue,
     ) -> Result<Option<EvalValue>> {
         match (self, member) {
-            (Self::Object(values), Self::String(key)) => Ok(values.get(key).cloned()),
+            (Self::Object(values), key) => Ok(values.get(&EvalKey(key.clone())).cloned()),
             /*
             (Self::Object(values), Self::Int(key)) => {
                 Ok(values.get(key.to_string().as_str()).cloned())
@@ -745,13 +902,6 @@ impl EvalValue {
         &self,
         member: &EvalValue,
     ) -> Result<EvalValue> {
-        if !matches!(member, Self::String(_) | Self::Int(_)) {
-            bail!(Type,
-                "Cannot access member {} of {}: a member must be a string or an integer",
-                member.diagnostic(),
-                self.diagnostic()
-            )
-        }
         if let Some(value) = self.direct_member(member)? {
             return Ok(value);
         }
@@ -1066,7 +1216,15 @@ impl EvalValue {
     pub fn total_cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
             (EvalValue::Int(a), EvalValue::Int(b)) => a.cmp(b),
-            (EvalValue::Float(a), EvalValue::Float(b)) => a.total_cmp(b),
+            (EvalValue::Float(a), EvalValue::Float(b)) => {
+                if a.is_nan() && b.is_nan() {
+                    Ordering::Equal
+                } else if *a == 0.0 && *b == 0.0 {
+                    Ordering::Equal
+                } else {
+                    a.total_cmp(b)
+                }
+            },
             (EvalValue::Int(a), EvalValue::Float(b)) => cmp_int_float(*a, *b).into(),
             (EvalValue::Float(a), EvalValue::Int(b)) => cmp_int_float(*b, *a).reverse().into(),
             (EvalValue::String(a), EvalValue::String(b)) => a.cmp(b),
@@ -1088,10 +1246,10 @@ impl EvalValue {
             (EvalValue::Object(a), EvalValue::Object(b)) => {
                 let mut entries_a: Vec<_> = a.iter().collect();
                 let mut entries_b: Vec<_> = b.iter().collect();
-                entries_a.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
-                entries_b.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
+                entries_a.sort_by(|(k1, _), (k2, _)| k1.0.total_cmp(&k2.0));
+                entries_b.sort_by(|(k1, _), (k2, _)| k1.0.total_cmp(&k2.0));
                 for ((k1, v1), (k2, v2)) in entries_a.iter().zip(entries_b.iter()) {
-                    let key_cmp = k1.cmp(k2);
+                    let key_cmp = k1.0.total_cmp(&k2.0);
                     if key_cmp != Ordering::Equal {
                         return key_cmp;
                     }
@@ -1158,6 +1316,55 @@ impl EvalValue {
                     match b.get(key) {
                         Some(value_b) => {
                             if !value_a.strict_eq(value_b) {
+                                return false;
+                            }
+                        },
+                        None => return false,
+                    }
+                }
+                true
+            },
+            (EvalValue::Func(a), EvalValue::Func(b)) => Arc::ptr_eq(a, b),
+            (EvalValue::Type(a), EvalValue::Type(b)) => a == b,
+            _ => false,
+        }
+    }
+    /// Total strict equality comparison. Uses total ordering.
+    /// Returns true if `self` and `other` are of the same type and have the same value.
+    pub fn total_strict_eq(&self, other: &EvalValue) -> bool {
+        match (self, other) {
+            (EvalValue::Null, EvalValue::Null) => true,
+            (EvalValue::Int(a), EvalValue::Int(b)) => a == b,
+            (EvalValue::Float(a), EvalValue::Float(b)) => {
+                if a.is_nan() && b.is_nan() {
+                    true
+                } else if *a == 0.0 && *b == 0.0 {
+                    true
+                } else {
+                    a.total_cmp(b) == std::cmp::Ordering::Equal
+                }
+            },
+            (EvalValue::Bool(a), EvalValue::Bool(b)) => a == b,
+            (EvalValue::String(a), EvalValue::String(b)) => a == b,
+            (EvalValue::Array(a), EvalValue::Array(b)) => {
+                if a.len() != b.len() {
+                    return false;
+                }
+                for (item_a, item_b) in a.iter().zip(b.iter()) {
+                    if !item_a.total_strict_eq(item_b) {
+                        return false;
+                    }
+                }
+                true
+            },
+            (EvalValue::Object(a), EvalValue::Object(b)) => {
+                if a.len() != b.len() {
+                    return false;
+                }
+                for (key, value_a) in a.iter() {
+                    match b.get(key) {
+                        Some(value_b) => {
+                            if !value_a.total_strict_eq(value_b) {
                                 return false;
                             }
                         },
@@ -1473,8 +1680,8 @@ impl<'a> Env<'a> {
 }
 
 /// A binding pattern used by `let`, function parameters, and comprehensions.
-/// The name `_` is an ignore pattern: it consumes a value without binding a name.
-/// A list may contain one `*name` rest capture at each nesting level.
+/// The joker `_` is an ignore pattern: it consumes a value without binding a name.
+/// A list may contain one `*name` or joker `*_` rest capture at each nesting level.
 /// Untagged serialization keeps existing name-only saved formulas compatible.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(from = "BindingPatternRepr", into = "BindingPatternRepr")]
@@ -2191,6 +2398,7 @@ impl FormulaEngine {
                     let key = self
                         .evaluate_ast(key, env)
                         .with_context(|| format!("Evaluating dictionary key {index}"))?;
+                    /*
                     let key = match key {
                         EvalValue::String(key) => key,
                         other => bail!(Type,
@@ -2198,10 +2406,11 @@ impl FormulaEngine {
                             other.diagnostic()
                         ),
                     };
+                    */
                     let resolved = self
                         .evaluate_ast(value, env)
                         .with_context(|| format!("Evaluating the value associated with key `{key}`"))?;
-                    values.insert(key, resolved);
+                    values.insert(EvalKey(key), resolved);
                 }
                 Ok(EvalValue::Object(Arc::from(values)))
             }
@@ -2234,6 +2443,7 @@ impl FormulaEngine {
                             continue;
                         }
                     }
+                    /*
                     let resolved_key = match self.evaluate_ast(key, &local_env)? {
                         EvalValue::String(key) => key,
                         other => bail!(Type,
@@ -2241,6 +2451,8 @@ impl FormulaEngine {
                             other.diagnostic()
                         ),
                     };
+                    */
+                    let resolved_key = EvalKey(self.evaluate_ast(key, &local_env)?);
                     values.insert(resolved_key, self.evaluate_ast(value, &local_env)?);
                 }
                 Ok(EvalValue::Object(Arc::from(values)))
@@ -2761,10 +2973,10 @@ fn indexof_str(haystack: &str, needle: &str) -> EvalValue {
         EvalValue::Null
     }
 }
-fn indexof_object(haystack: &IndexMap<Arc<str>, EvalValue>, needle: &EvalValue) -> EvalValue {
+fn indexof_object(haystack: &IndexMap<EvalKey, EvalValue>, needle: &EvalValue) -> EvalValue {
     for (key, value) in haystack.iter() {
         if value == needle {
-            return EvalValue::String(key.clone());
+            return key.0.clone();
         }
     }
     EvalValue::Null
@@ -2798,7 +3010,8 @@ fn get_path(obj: &EvalValue, path: &[&str], default: Option<EvalValue>) -> Resul
             }
         }
         (EvalValue::Object(values), Err(_)) => {
-            if let Some(value) = values.get(path[0]) {
+            let key = EvalKey(EvalValue::String(path[0].into())); 
+            if let Some(value) = values.get(&key) {
                 get_path(value, &path[1..], default)
             } else {
                 default.ok_or_else(|| Error::UnknownKey { key: path[0].to_owned() })
@@ -2820,7 +3033,7 @@ fn has_path(obj: &EvalValue, path: &[&str]) -> bool {
             .get(index)
             .map_or(false, |value| has_path(value, &path[1..])),
         (EvalValue::Object(values), Err(_)) => values
-            .get(path[0])
+            .get(&EvalKey(EvalValue::String(path[0].into())))
             .map_or(false, |value| has_path(value, &path[1..])),
         _ => false,
     }
@@ -2998,11 +3211,11 @@ fn comprehension_rows(iterable: EvalValue, target_count: usize) -> Result<Arc<[A
             .collect(),
         (EvalValue::Object(values), 1) => Ok(values
             .keys()
-            .map(|key| vec![EvalValue::String(key.clone())].into())
+            .map(|key| vec![key.0.clone()].into())
             .collect::<Arc<[Arc<[EvalValue]>]>>()),
         (EvalValue::Object(values), 2) => Ok(values
             .iter()
-            .map(|(key, value)| vec![EvalValue::String(key.clone()), value.clone()].into())
+            .map(|(key, value)| vec![key.0.clone(), value.clone()].into())
             .collect::<Arc<[Arc<[EvalValue]>]>>()),
         (EvalValue::Object(_), expected) => bail!(InvalidArgument,
             "A dictionary can be iterated with one variable (key) or two variables (key, value), not {expected}"
@@ -3402,13 +3615,8 @@ fn contains_value(container: &EvalValue, needle: &EvalValue) -> Result<bool> {
                 container.diagnostic()
             ),
         },
-        EvalValue::Object(values) => match needle {
-            EvalValue::String(needle) => Ok(values.contains_key(needle)),
-            _ => bail!(Type,
-                "Cannot search for {} in {}: a dictionary key must be a string",
-                needle.diagnostic(),
-                container.diagnostic()
-            ),
+        EvalValue::Object(values) => {
+            Ok(values.contains_key(&EvalKey(needle.clone())))
         },
         _ => bail!(Type,
             "Cannot search for {} in {}: the `in` operator requires a list, string, or dictionary as its container",
@@ -5402,8 +5610,6 @@ impl Parser {
 
     /// Parses postfix according to formula precedence rules.
     ///
-    /// Required fields and variant-specific JSON types are checked immediately. Formula
-    /// strings are preserved for runtime evaluation.
     fn parse_postfix(&mut self) -> Result<Expr> {
         let mut expression = self.parse_primary()?;
         loop {
@@ -5726,9 +5932,7 @@ pub mod builtins {
     use std::{cmp::Ordering, sync::Arc};
 
     use crate::formula::{
-        expect_arity, expect_arity_between, full_formula, get_path, has_path, indexof_object, indexof_str, minmax,
-        mul_values, normalize_index, pop_values, power_values, python_round, range_values, shuffle,
-        sum_values, zip_arrays, Env, EvalType, EvalValue, FormulaEngine, Function, try_i64_to_f64,
+        Env, EvalKey, EvalType, EvalValue, FormulaEngine, Function, expect_arity, expect_arity_between, full_formula, get_path, has_path, indexof_object, indexof_str, minmax, mul_values, normalize_index, pop_values, power_values, python_round, range_values, shuffle, sum_values, try_i64_to_f64, zip_arrays,
     };
     use crate::err::{ArgumentCount, Error, Result, ResultContext, bail, error};
     use indexmap::IndexMap;
@@ -5954,7 +6158,7 @@ use rand::{Rng, RngExt};
                 for entry in entries.iter() {
                     match entry {
                         EvalValue::Array(pair) if pair.len() == 2 => {
-                            let key = pair[0].clone().try_into()?;
+                            let key = EvalKey(pair[0].clone());
                             obj.insert(key, pair[1].clone());
                         }
                         _ => bail!(Type, "fromentries requires a list of pairs"),
@@ -5992,10 +6196,19 @@ use rand::{Rng, RngExt};
             _ => return Ok(expr.clone()),
         };
         let local_env = if arguments.len() == 2 {
-            match &arguments[1] {
-                EvalValue::Object(obj) => Env::from_index_map(&**obj),
-                _ => bail!(Type, "eval requires a dictionary as its second argument"),
+            let mut map = IndexMap::new();
+            let EvalValue::Object(obj) = &arguments[1] else {
+                bail!(Type, "eval requires a dictionary as its second argument")
+            };
+            for (key, value) in obj.iter() {
+                match &key.0 {
+                    EvalValue::String(s) => {
+                        map.insert(s.clone(), value.clone());
+                    }
+                    _ => bail!(Type, "eval requires a dictionary with string keys"),
+                }
             }
+            Env::from_index_map(&map)
         } else {
             Env::new()
         };
@@ -6969,14 +7182,9 @@ use rand::{Rng, RngExt};
         env: &Env,
     ) -> Result<EvalValue> {
         let values = keyed_values("groupby", arguments, formula, env)?;
-        let mut groups: IndexMap<Arc<str>, Vec<EvalValue>> = IndexMap::new();
+        let mut groups: IndexMap<EvalKey, Vec<EvalValue>> = IndexMap::new();
         for (key, value) in values {
-            let EvalValue::String(key) = key else {
-                bail!(Type,
-                    "groupby requires keys of type str, got {}",
-                    key.diagnostic()
-                );
-            };
+            let key = EvalKey(key);
             groups.entry(key).or_default().push(value);
         }
         Ok(EvalValue::Object(Arc::new(
@@ -7588,7 +7796,7 @@ use rand::{Rng, RngExt};
     fn object_argument<'a>(
         name: &str,
         arguments: &'a [EvalValue],
-    ) -> Result<&'a Arc<IndexMap<Arc<str>, EvalValue>>> {
+    ) -> Result<&'a Arc<IndexMap<EvalKey, EvalValue>>> {
         match arguments.first() {
             Some(EvalValue::Object(values)) => Ok(values),
             _ => bail!(Type, "{name} requires a dictionary as its first argument"),
@@ -7628,7 +7836,7 @@ use rand::{Rng, RngExt};
             object_argument("keys", arguments)?
                 .keys()
                 .cloned()
-                .map(EvalValue::String)
+                .map(|k| k.0)
                 .collect(),
         ))
     }
@@ -7657,7 +7865,7 @@ use rand::{Rng, RngExt};
             object_argument("entries", arguments)?
                 .iter()
                 .map(|(key, value)| {
-                    EvalValue::Array(vec![EvalValue::String(key.clone()), value.clone()].into())
+                    EvalValue::Array(vec![key.0.clone(), value.clone()].into())
                 })
                 .collect(),
         ))
@@ -7704,11 +7912,9 @@ use rand::{Rng, RngExt};
     ) -> Result<EvalValue> {
         expect_arity_between("tryget", arguments.len(), 2, 3)?;
         let values = object_argument("tryget", arguments)?;
-        let EvalValue::String(key) = &arguments[1] else {
-            bail!(Type, "tryget requires a string key (got: {})", &arguments[1])
-        };
+        let key = EvalKey(arguments[1].clone());
         Ok(values
-            .get(key)
+            .get(&key)
             .cloned()
             .unwrap_or_else(|| arguments.get(2).cloned().unwrap_or(EvalValue::Null)))
     }
@@ -7720,11 +7926,9 @@ use rand::{Rng, RngExt};
     ) -> Result<EvalValue> {
         expect_arity("remove", arguments, 2)?;
         let values = object_argument("remove", arguments)?;
-        let EvalValue::String(key) = &arguments[1] else {
-            bail!(Type, "remove requires a string key")
-        };
+        let key = EvalKey(arguments[1].clone());
         let mut result = values.clone();
-        Arc::make_mut(&mut result).shift_remove(key);
+        Arc::make_mut(&mut result).shift_remove(&key);
         Ok(EvalValue::Object(result))
     }
 
@@ -7742,7 +7946,7 @@ use rand::{Rng, RngExt};
             result.insert(
                 key.clone(),
                 function.clone().call(
-                    &[value.clone(), EvalValue::String(key.clone())],
+                    &[value.clone(), key.0.clone()],
                     formula,
                     env,
                 )?,
@@ -7765,7 +7969,7 @@ use rand::{Rng, RngExt};
             if function
                 .clone()
                 .call(
-                    &[value.clone(), EvalValue::String(key.clone())],
+                    &[value.clone(), key.0.clone()],
                     formula,
                     env,
                 )?
@@ -8011,7 +8215,18 @@ use rand::{Rng, RngExt};
         };
         let local_env = match arguments.get(1) {
             None => Env::new().with_parent(env),
-            Some(EvalValue::Object(obj)) => Env::from_arc(obj.clone()).with_parent(env),
+            Some(EvalValue::Object(obj)) => {
+                let mut map = IndexMap::new();
+                for (k, v) in obj.iter() {
+                    match &k.0 {
+                        EvalValue::String(key) => {
+                            map.insert(key.clone(), v.clone());
+                        }
+                        _ => bail!(Type, "fmt environment keys must be strings"),
+                    }
+                }
+                Env::from_index_map(&map).with_parent(env)
+            },
             Some(_) => bail!(Type, "The environment for fmt must be a dictionary."),
         };
         let res = formula.format(fmtstr.clone(), &local_env)?;

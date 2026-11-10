@@ -91,7 +91,7 @@ String length, indexing, slicing, `indexof`, and iteration count Unicode scalar 
 
 === Lists and dictionaries
 
-List items, dictionary keys, and dictionary values are expressions. Dictionary keys must evaluate to strings; a bare key name is a variable reference, not an implicit string. Entries retain insertion order. Repeating a key replaces its value without moving its position. Lists and dictionaries allow a trailing comma.
+List items, dictionary keys, and dictionary values are expressions. Dictionary keys can be of any type and heterogenous. Entries retain insertion order. Repeating a key replaces its value without moving its position. Lists and dictionaries allow a trailing comma.
 
 ```text
 [1, 2 + 3, 'four',]
@@ -100,6 +100,10 @@ let key = 'score' for {key: 10, 'double': 20}
 ```
 
 Lists compare element by element for equality. Dictionaries compare their keys and values, independently of insertion order. Collection elements use the same equality rules as standalone values.
+
+=== Functions
+
+Functions are first class values. Sadly, they lose their identity when serialized and deserialized, meaning closures cannot be reliably persisted across sessions.
 
 === Truthiness and conversion
 
@@ -329,7 +333,7 @@ List and dictionary literals and list patterns allow trailing commas. Calls, fun
 
 Lists and strings use zero-based integer indexes. Negative indexes count from the end: `-1` is the last element. An out-of-range index is an error. Both also accept dotted nonnegative indexes, such as `[10, 20].0` or `'abc'.1`.
 
-Dictionary lookup accepts a string key in brackets or a property name after a dot (if the name is a valid identifier). Use brackets for computed keys or names containing punctuation.
+Dictionary lookup accepts a key in brackets or a property name after a dot (if the name is a valid identifier). Use brackets for computed keys or names containing punctuation.
 
 ```text
 [10, 20, 30][-1]
@@ -449,7 +453,6 @@ The following functions are available as standard global bindings. Their names c
 #reference(
   [*Call*], [*Behavior*],
   [`type(value)`], [Return the first-class type listed under datatypes, rather than a string.],
-  [`str(value)`, `int(value)`, `float(value)`, `bool(value)`], [Convert as described under truthiness and conversion.],
   [`exists(name)`], [Return whether a variable with the given string name exists in the current environment.],
   [`abs(number)`], [Absolute value of an integer or float, preserving its type.],
   [`pow(base, exponent[, modulo])`], [Exponentiation; see arithmetic. If modulo is provided, the exponent and base must be nonnegative integers.],
@@ -589,6 +592,26 @@ Logarithms must have positive and finite `self`s. Bases must be positive and not
 
 Parentheses make numeric receivers clear: `(-3).abs()` and `(2.5).round()`. For float-to-integer results, the saturation and NaN conversion rules also apply to `.ceil()` and `.floor()`.
 
+==== `int` static methods
+#reference(
+  [*Method*], [*Behavior*],
+  [`.max()`], [Return the maximum representable integer.],
+  [`.min()`], [Return the minimum representable integer.],
+)
+
+==== `float` static methods
+
+#reference(
+  [*Method*], [*Behavior*],
+  [`.max()`], [Return the maximum representable float.],
+  [`.min()`], [Return the minimum representable float.],
+  [`.eps()`], [Return the machine epsilon for the float type.],
+  [`.nan()`], [Return a NaN (Not a Number) value for the float type.],
+  [`.inf()`], [Return positive infinity for the float type.],
+  [`.pi()`], [Return the value of π for the float type.],
+  [`.e()`], [Return the value of e for the float type.],
+)
+
 === String methods
 
 #reference(
@@ -676,6 +699,13 @@ Without an initial accumulator, `cumul` and `reduce` start with the first elemen
 ```
 
 The results are `[2, 5]`, `[1, 3, 6]`, `16`, and `6`. Defaults passed to `find` and `tryget` are evaluated before the method runs, even when not needed.
+
+==== `list` static methods
+
+#reference(
+  [*Method*], [*Behavior*],
+  [`.gen(n, f)`], [Create a list of length `n` by calling `f` for each index.],
+)
 
 === Dictionary methods
 

@@ -16,7 +16,7 @@
 
 use indexmap::IndexMap;
 
-use crate::{EvalValue, Token};
+use crate::{EvalKey, EvalValue, Token};
 use std::{
     error::Error as StdError, fmt, num::{ParseFloatError, ParseIntError}, sync::Arc,
 };
@@ -99,24 +99,24 @@ impl LexError {
         let mut data = IndexMap::new();
         let kind = match self {
             Self::UnexpectedCharacter(c) => {
-                data.insert("character".into(), EvalValue::String(c.to_string().into()));
+                data.insert(EvalKey("character".into()), EvalValue::String(c.to_string().into()));
                 "UnexpectedCharacter"
             },
             Self::LoneQuestionMark => "LoneQuestionMark",
             Self::MissingDigits { radix } => {
-                data.insert("radix".into(), EvalValue::Int(*radix as i64));
+                data.insert(EvalKey("radix".into()), EvalValue::Int(*radix as i64));
                 "MissingDigits"
             },
             Self::InvalidDigit { radix } => {
-                data.insert("radix".into(), EvalValue::Int(*radix as i64));
+                data.insert(EvalKey("radix".into()), EvalValue::Int(*radix as i64));
                 "InvalidDigit"
             },
             Self::InvalidInteger { literal, .. } => {
-                data.insert("literal".into(), EvalValue::String(literal.clone().into()));
+                data.insert(EvalKey("literal".into()), EvalValue::String(literal.clone().into()));
                 "InvalidInteger"
             },
             Self::InvalidFloat { literal, .. } => {
-                data.insert("literal".into(), EvalValue::String(literal.clone().into()));
+                data.insert(EvalKey("literal".into()), EvalValue::String(literal.clone().into()));
                 "InvalidFloat"
             },
             Self::IncompleteEscape => "IncompleteEscape",
@@ -124,8 +124,8 @@ impl LexError {
             Self::ExpectedIdentifier => "ExpectedIdentifier",
             Self::InvalidUnicodeEscape { .. } => "InvalidUnicodeEscape",
         };
-        dict.insert("kind".into(), EvalValue::String(kind.into()));
-        dict.insert("data".into(), EvalValue::Object(Arc::new(data)));
+        dict.insert(EvalKey("kind".into()), EvalValue::String(kind.into()));
+        dict.insert(EvalKey("data".into()), EvalValue::Object(Arc::new(data)));
         EvalValue::Object(Arc::new(dict))
     }
 }
@@ -188,43 +188,43 @@ impl SyntaxError {
         let mut data = IndexMap::new();
         let kind = match self {
             Self::TrailingToken { found } => {
-                data.insert("found".into(), EvalValue::String(found.to_string().into()));
+                data.insert(EvalKey("found".into()), EvalValue::String(found.to_string().into()));
                 "TrailingToken"
             },
             Self::ExpectedExpression { found } => {
-                data.insert("found".into(), EvalValue::String(found.to_string().into()));
+                data.insert(EvalKey("found".into()), EvalValue::String(found.to_string().into()));
                 "ExpectedExpression"
             },
             Self::ExpectedToken { expected, found } => {
-                data.insert("expected".into(), EvalValue::String(expected.to_string().into()));
-                data.insert("found".into(), EvalValue::String(found.to_string().into()));
+                data.insert(EvalKey("expected".into()), EvalValue::String(expected.to_string().into()));
+                data.insert(EvalKey("found".into()), EvalValue::String(found.to_string().into()));
                 "ExpectedToken"
             },
             Self::ExpectedKeyword { expected, found } => {
-                data.insert("expected".into(), EvalValue::String(expected.clone().into()));
-                data.insert("found".into(), EvalValue::String(found.to_string().into()));
+                data.insert(EvalKey("expected".into()), EvalValue::String(expected.clone().into()));
+                data.insert(EvalKey("found".into()), EvalValue::String(found.to_string().into()));
                 "ExpectedKeyword"
             },
             Self::ExpectedBinding { found } => {
-                data.insert("found".into(), EvalValue::String(found.to_string().into()));
+                data.insert(EvalKey("found".into()), EvalValue::String(found.to_string().into()));
                 "ExpectedBinding"
             },
             Self::ExpectedProperty { found } => {
-                data.insert("found".into(), EvalValue::String(found.to_string().into()));
+                data.insert(EvalKey("found".into()), EvalValue::String(found.to_string().into()));
                 "ExpectedProperty"
             },
             Self::InvalidBinding { name } => {
-                data.insert("name".into(), EvalValue::String(name.clone().into()));
+                data.insert(EvalKey("name".into()), EvalValue::String(name.clone().into()));
                 "InvalidBinding"
             },
             Self::DuplicateBinding { name } => {
-                data.insert("name".into(), EvalValue::String(name.clone().into()));
+                data.insert(EvalKey("name".into()), EvalValue::String(name.clone().into()));
                 "DuplicateBinding"
             },
             Self::MultipleRestPatterns => "MultipleRestPatterns",
         };
-        dict.insert("kind".into(), EvalValue::String(kind.into()));
-        dict.insert("data".into(), EvalValue::Object(Arc::new(data)));
+        dict.insert(EvalKey("kind".into()), EvalValue::String(kind.into()));
+        dict.insert(EvalKey("data".into()), EvalValue::Object(Arc::new(data)));
         EvalValue::Object(Arc::new(dict))
     }
 }
@@ -253,21 +253,21 @@ impl ArgumentCount {
         let mut data = IndexMap::new();
         let kind = match self {
             Self::Exactly(count) => {
-                data.insert("count".into(), EvalValue::Int(*count as i64));
+                data.insert(EvalKey("count".into()), EvalValue::Int(*count as i64));
                 "Exactly"
             }
             Self::AtLeast(count) => {
-                data.insert("count".into(), EvalValue::Int(*count as i64));
+                data.insert(EvalKey("count".into()), EvalValue::Int(*count as i64));
                 "AtLeast"
             }
             Self::Between { min, max } => {
-                data.insert("min".into(), EvalValue::Int(*min as i64));
-                data.insert("max".into(), EvalValue::Int(*max as i64));
+                data.insert(EvalKey("min".into()), EvalValue::Int(*min as i64));
+                data.insert(EvalKey("max".into()), EvalValue::Int(*max as i64));
                 "Between"
             }
         };
-        dict.insert("kind".into(), EvalValue::String(kind.into()));
-        dict.insert("data".into(), EvalValue::Object(Arc::new(data)));
+        dict.insert(EvalKey("kind".into()), EvalValue::String(kind.into()));
+        dict.insert(EvalKey("data".into()), EvalValue::Object(Arc::new(data)));
         EvalValue::Object(Arc::new(dict))
     }
 }
@@ -370,13 +370,13 @@ impl Error {
         let mut data = IndexMap::new();
         let kind = match source {
             Error::Lexical { position, kind } => {
-                data.insert("position".into(), EvalValue::Int(*position as i64));
-                data.insert("source".into(), kind.to_dict());
+                data.insert(EvalKey("position".into()), EvalValue::Int(*position as i64));
+                data.insert(EvalKey("source".into()), kind.to_dict());
                 "Lexical"
             },
             Error::Syntax { token_index, kind } => {
-                data.insert("index".into(), EvalValue::Int(*token_index as i64));
-                data.insert("source".into(), kind.to_dict());
+                data.insert(EvalKey("index".into()), EvalValue::Int(*token_index as i64));
+                data.insert(EvalKey("source".into()), kind.to_dict());
 
                 "Syntax"
             },
@@ -401,58 +401,58 @@ impl Error {
                 "User"
             },
             Error::UnknownVariable { name, available: _ } => {
-                data.insert("name".into(), EvalValue::String(name.clone().into()));
+                data.insert(EvalKey("name".into()), EvalValue::String(name.clone().into()));
                 "UnknownVariable"
             },
             Error::UnknownMember { member, value } => {
-                data.insert("member".into(), EvalValue::String(member.clone().into()));
-                data.insert("value".into(), EvalValue::String(value.clone().into()));
+                data.insert(EvalKey("member".into()), EvalValue::String(member.clone().into()));
+                data.insert(EvalKey("value".into()), EvalValue::String(value.clone().into()));
                 "UnknownMember"
             },
             Error::UnknownKey { key } => {
-                data.insert("key".into(), EvalValue::String(key.clone().into()));
+                data.insert(EvalKey("key".into()), EvalValue::String(key.clone().into()));
                 "UnknownKey"
             },
             Error::IndexOutOfBounds { index, length } => {
-                data.insert("index".into(), EvalValue::Int(*index as i64));
-                data.insert("length".into(), EvalValue::Int(*length as i64));
+                data.insert(EvalKey("index".into()), EvalValue::Int(*index as i64));
+                data.insert(EvalKey("length".into()), EvalValue::Int(*length as i64));
                 "IndexOutOfBounds"
             },
             Error::Arity { function, expected, actual } => {
-                data.insert("function".into(), EvalValue::String(function.clone().into()));
-                data.insert("expected".into(), expected.to_dict());
-                data.insert("actual".into(), EvalValue::Int(*actual as i64));
+                data.insert(EvalKey("function".into()), EvalValue::String(function.clone().into()));
+                data.insert(EvalKey("expected".into()), expected.to_dict());
+                data.insert(EvalKey("actual".into()), EvalValue::Int(*actual as i64));
                 "Arity"
             },
             Error::RecursionLimit { limit, call_chain: _ } => {
-                data.insert("limit".into(), EvalValue::Int(*limit as i64));
+                data.insert(EvalKey("limit".into()), EvalValue::Int(*limit as i64));
                 // data.insert("call_chain".into(), EvalValue::Array(call_chain.iter().map(|s| EvalValue::String(s.clone().into())).collect()));
                 "RecursionLimit"
             },
             Error::InvalidBuiltin { name, reason: _ } => {
-                data.insert("name".into(), EvalValue::String(name.clone().into()));
+                data.insert(EvalKey("name".into()), EvalValue::String(name.clone().into()));
                 // data.insert("reason".into(), EvalValue::String(reason.clone().into()));
                 "InvalidBuiltin"
             },
             Error::InvalidInteger { value, source: _ } => {
-                data.insert("value".into(), EvalValue::String(value.clone().into()));
+                data.insert(EvalKey("value".into()), EvalValue::String(value.clone().into()));
                 "InvalidInteger"
             },
             Error::InvalidFloat { value, source: _ } => {
-                data.insert("value".into(), EvalValue::String(value.clone().into()));
+                data.insert(EvalKey("value".into()), EvalValue::String(value.clone().into()));
                 "InvalidFloat"
             },
             Error::InvalidJoker => {
                 "InvalidJoker"
             },
             Error::Context { message: _, source } => {
-                data.insert("source".into(), source.to_dict());
+                data.insert(EvalKey("source".into()), source.to_dict());
                 "Context"
             },
         };
-        dict.insert("kind".into(), EvalValue::String(kind.into()));
-        dict.insert("msg".into(), EvalValue::String(self.to_string().into()));
-        dict.insert("data".into(), EvalValue::Object(Arc::from(data)));
+        dict.insert(EvalKey("kind".into()), EvalValue::String(kind.into()));
+        dict.insert(EvalKey("msg".into()), EvalValue::String(self.to_string().into()));
+        dict.insert(EvalKey("data".into()), EvalValue::Object(Arc::from(data)));
         EvalValue::Object(Arc::from(dict))
     }
 }
