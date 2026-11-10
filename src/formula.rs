@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use serde::de::{Error as DeError};
 use std::sync::LazyLock as Lazy;
+use std::hash::Hash;
 
 pub static INT: Lazy<Arc<str>> = Lazy::new(|| Arc::from("int"));
 pub static FLOAT: Lazy<Arc<str>> = Lazy::new(|| Arc::from("float"));
@@ -121,8 +122,13 @@ impl std::fmt::Display for EvalType {
 /// A wrapper around `EvalValue` used as a key in hash maps, ensuring proper hashing and equality semantics.
 /// It ensure that NaN values are equal to each other and that the hashing and equality semantics are consistent with the intended behavior for use as keys in hash maps.
 /// Also that +0.0 == -0.0 for hashing and equality purposes.
-#[derive(Debug, Clone, Hash)]
+#[derive(Debug, Clone)]
 pub struct EvalKey(pub EvalValue);
+impl Hash for EvalKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
 
 impl PartialEq for EvalKey {
     fn eq(&self, other: &Self) -> bool {
@@ -130,7 +136,7 @@ impl PartialEq for EvalKey {
     }
 }
 impl Eq for EvalKey {}
-impl std::hash::Hash for EvalValue {
+impl EvalValue {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         match self {
             EvalValue::Null => {
@@ -160,7 +166,9 @@ impl std::hash::Hash for EvalValue {
             }
             EvalValue::Array(arr) => {
                 state.write_u8(5);
-                arr.hash(state);
+                for item in arr.iter() {
+                    item.hash(state);
+                }
             }
             EvalValue::Object(obj) => {
                 state.write_u8(6);
@@ -1294,7 +1302,15 @@ impl EvalValue {
         match (self, other) {
             (EvalValue::Null, EvalValue::Null) => true,
             (EvalValue::Int(a), EvalValue::Int(b)) => a == b,
-            (EvalValue::Float(a), EvalValue::Float(b)) => a == b,
+            (EvalValue::Float(a), EvalValue::Float(b)) => {
+                if a.is_nan() && b.is_nan() {
+                    true
+                } else if *a == 0.0 && *b == 0.0 {
+                    true
+                } else {
+                    a == b
+                }
+            },
             (EvalValue::Bool(a), EvalValue::Bool(b)) => a == b,
             (EvalValue::String(a), EvalValue::String(b)) => a == b,
             (EvalValue::Array(a), EvalValue::Array(b)) => {
@@ -1361,14 +1377,13 @@ impl EvalValue {
                 if a.len() != b.len() {
                     return false;
                 }
-                for (key, value_a) in a.iter() {
-                    match b.get(key) {
-                        Some(value_b) => {
-                            if !value_a.total_strict_eq(value_b) {
-                                return false;
-                            }
-                        },
-                        None => return false,
+                let mut sorted_a: Vec<_> = a.iter().collect();
+                sorted_a.sort_by(|(key_a, _), (key_b, _)| key_a.0.total_cmp(&key_b.0));
+                let mut sorted_b: Vec<_> = b.iter().collect();
+                sorted_b.sort_by(|(key_a, _), (key_b, _)| key_a.0.total_cmp(&key_b.0));
+                for ((key_a, value_a), (key_b, value_b)) in sorted_a.into_iter().zip(sorted_b.into_iter()) {
+                    if key_a != key_b || !value_a.total_strict_eq(value_b) {
+                        return false;
                     }
                 }
                 true
