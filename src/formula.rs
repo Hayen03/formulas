@@ -197,6 +197,12 @@ impl std::fmt::Display for EvalKey {
     }
 }
 
+impl<T> From<T> for EvalKey where EvalValue: From<T> {
+    fn from(value: T) -> Self {
+        EvalKey(EvalValue::from(value))
+    }
+}
+
 /// Compares an integer and a float, taking into account the exact bounds of i64 and the precision of f64.
 fn cmp_int_float(i: i64, f: f64) -> Ordering {
     // Every i64 becomes a finite float, so rounding cannot
