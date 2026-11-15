@@ -2510,7 +2510,7 @@ impl FormulaEngine {
         Ok(Arc::from(output))
     }
     pub fn fmt_value(&mut self, value: &EvalValue, env: &Env) -> Result<Arc<str>> {
-        Ok(self.resolve_formula(value, env)?.to_string().into())
+        Ok(self.resolve_formula(value, env)?.display().into())
     }
     /// Resolves `value` once and evaluates it if it is a formula function.
     pub fn resolve_formula(&mut self, value: &EvalValue, env: &Env) -> Result<EvalValue> {
