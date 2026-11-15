@@ -7972,8 +7972,8 @@ use rand::{Rng, RngExt};
         let mut formatted = Vec::with_capacity(values.len());
         for value in values.iter() {
             let formatted_value = match value {
-                EvalValue::Func(_) => value.clone().call(&[], formula, env)?.repr(),
-                _ => value.to_string().into(),
+                EvalValue::Func(_) => value.clone().call(&[], formula, env)?.display(),
+                _ => value.display(),
             };
             formatted.push(formatted_value);
         }
