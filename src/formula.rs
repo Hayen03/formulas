@@ -2286,6 +2286,7 @@ pub struct FormulaEngine {
     globals: Env<'static>,
     call_stack: Vec<Arc<str>>,
     max_rec: usize,
+    capture_ignore: Arc<[Arc<str>]>,
 }
 
 impl FormulaEngine {
@@ -2303,6 +2304,7 @@ impl FormulaEngine {
             globals: GLOBAL_ENV.clone().into_engine_globals(),
             call_stack: Vec::new(),
             max_rec: 32,
+            capture_ignore: Arc::new([]),
         }
     }
 
@@ -2326,6 +2328,17 @@ impl FormulaEngine {
     /// Returns the maximum active call depth shared by built-in and user-defined functions.
     pub fn get_max_rec(&self) -> usize {
         self.max_rec
+    }
+
+    /// Sets the list of variable names to ignore when capturing the environment for closures.
+    pub fn with_capture_ignore(
+        self,
+        capture_ignore: Arc<[Arc<str>]>,
+    ) -> Self {
+        Self {
+            capture_ignore,
+            ..self
+        }
     }
 
     /// Bounds nested function calls and restores the stack after success or an engine error.
@@ -2555,6 +2568,10 @@ impl FormulaEngine {
                 // An unresolved free name may be supplied dynamically by the call environment.
                 continue;
             };
+            if self.capture_ignore.contains(&name) {
+                // Skip capturing this variable as it is in the ignore list.
+                continue;
+            }
             match origin {
                 BindingOrigin::EngineGlobal => {}
                 BindingOrigin::Local => {
