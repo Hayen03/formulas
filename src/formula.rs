@@ -2375,7 +2375,7 @@ impl FormulaEngine {
     pub fn resolve(&mut self, value: &EvalValue, env: &Env) -> Result<EvalValue> {
         match value {
             EvalValue::String(text) => {
-                if let Some(expression) = full_formula(text) {
+                if let Some(expression) = fully_wrapped_formula(text) {
                     self.evaluate(expression, env)
                 } else {
                     Ok(EvalValue::String(self.format(text.clone(), env)?))
