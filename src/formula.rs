@@ -508,7 +508,7 @@ pub enum EvalValueSerializer {
     NegInf,
     String(String),
     Array(Box<[EvalValueSerializer]>),
-    Object(Box<IndexMap<EvalValueSerializer, EvalValueSerializer>>),
+    Object(Box<[EvalObjSerializer]>),
     Func(Box<FunctionSerializer>),
     Type(EvalType),
 }
@@ -538,10 +538,10 @@ impl From<&EvalValue> for EvalValueSerializer {
                 EvalValueSerializer::Array(serialized_arr)
             }
             EvalValue::Object(obj) => {
-                let serialized_obj: Box<IndexMap<EvalValueSerializer, EvalValueSerializer>> =
+                let serialized_obj: Box<[EvalObjSerializer]> =
                     obj.iter()
-                        .map(|(k, v)| (EvalValueSerializer::from(&k.0), EvalValueSerializer::from(v)))
-                        .collect::<IndexMap<EvalValueSerializer, EvalValueSerializer>>().into();
+                        .map(|(k, v)| EvalObjSerializer { key: EvalValueSerializer::from(&k.0), value: EvalValueSerializer::from(v) })
+                        .collect::<Vec<EvalObjSerializer>>().into();
                 EvalValueSerializer::Object(serialized_obj)
             }
             EvalValue::Func(func) => EvalValueSerializer::Func(Box::new(FunctionSerializer::from(func.as_ref()))),
@@ -570,7 +570,7 @@ impl TryFrom<EvalValueSerializer> for EvalValue {
             EvalValueSerializer::Object(obj) => {
                 let deserialized_obj: Arc<IndexMap<EvalKey, EvalValue>> =
                     obj.into_iter()
-                        .map(|(k, v)| Ok((EvalKey(EvalValue::try_from(k)?), EvalValue::try_from(v)?)))
+                        .map(|EvalObjSerializer { key, value }| Ok((EvalKey(EvalValue::try_from(key)?), EvalValue::try_from(value)?)))
                         .collect::<Result<IndexMap<EvalKey, EvalValue>, crate::err::Error>>()?.into();
                 EvalValue::Object(deserialized_obj)
             }
@@ -582,34 +582,15 @@ impl TryFrom<EvalValueSerializer> for EvalValue {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EvalObjSerializer {
+    pub key: EvalValueSerializer,
+    pub value: EvalValueSerializer,
+}
+
 impl PartialEq for EvalValueSerializer {
     fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (EvalValueSerializer::Null, EvalValueSerializer::Null) => true,
-            (EvalValueSerializer::Bool(a), EvalValueSerializer::Bool(b)) => a == b,
-            (EvalValueSerializer::Int(a), EvalValueSerializer::Int(b)) => a == b,
-            (EvalValueSerializer::Float(a), EvalValueSerializer::Float(b)) => a.total_cmp(b) == std::cmp::Ordering::Equal,
-            (EvalValueSerializer::Nan, EvalValueSerializer::Nan) => true,
-            (EvalValueSerializer::PosInf, EvalValueSerializer::PosInf) => true,
-            (EvalValueSerializer::NegInf, EvalValueSerializer::NegInf) => true,
-            (EvalValueSerializer::Type(a), EvalValueSerializer::Type(b)) => a == b,
-            (EvalValueSerializer::String(a), EvalValueSerializer::String(b)) => a == b,
-            (EvalValueSerializer::Array(a), EvalValueSerializer::Array(b)) => a == b,
-            (EvalValueSerializer::Object(a), EvalValueSerializer::Object(b)) => {
-                if a.len() != b.len() {
-                    return false;
-                }
-                for (key, value) in a.iter() {
-                    match b.get(key) {
-                        Some(other_value) if value == other_value => continue,
-                        _ => return false,
-                    }
-                }
-                true
-            },
-            (EvalValueSerializer::Func(_a), EvalValueSerializer::Func(_b)) => false, // functions loses their identity once serialized. Using them as key is unreliable.
-            _ => false,
-        }
+        self.cmp(other) == std::cmp::Ordering::Equal
     }
 }
 impl Eq for EvalValueSerializer {}
@@ -656,15 +637,88 @@ impl std::hash::Hash for EvalValueSerializer {
             }
             EvalValueSerializer::Object(value) => {
                 state.write_u8(10);
-                for (key, val) in value.iter() {
-                    key.hash(state);
-                    val.hash(state);
+                let mut sorted = value.iter().collect::<Vec<_>>();
+                sorted.sort();
+                for obj in sorted {
+                    obj.hash(state);
                 }
             }
             EvalValueSerializer::Func(_) => {
                 state.write_u8(11);
             }
         }
+    }
+}
+impl Ord for EvalValueSerializer {
+    fn cmp(&self, other: &Self) -> Ordering {
+        use std::cmp::Ordering;
+        match (self, other) {
+            (Self::Int(a), Self::Int(b)) => a.cmp(b),
+            (Self::Float(a), Self::Float(b)) => {
+                if a.is_nan() && b.is_nan() {
+                    Ordering::Equal
+                } else if *a == 0.0 && *b == 0.0 {
+                    Ordering::Equal
+                } else {
+                    a.total_cmp(b)
+                }
+            },
+            (Self::String(a), Self::String(b)) => a.cmp(b),
+            (Self::PosInf, Self::PosInf) => Ordering::Equal,
+            (Self::NegInf, Self::NegInf) => Ordering::Equal,
+            (Self::Nan, Self::Nan) => Ordering::Equal,
+            (Self::Bool(a), Self::Bool(b)) => a.cmp(b),
+            (Self::Null, Self::Null) => Ordering::Equal,
+            (Self::Array(a), Self::Array(b)) => {
+                let len_cmp = a.len().cmp(&b.len());
+                if len_cmp != Ordering::Equal {
+                    return len_cmp;
+                }
+                for (item_a, item_b) in a.iter().zip(b.iter()) {
+                    let cmp = item_a.cmp(item_b);
+                    if cmp != Ordering::Equal {
+                        return cmp;
+                    }
+                }
+                Ordering::Equal
+            },
+            (Self::Object(a), Self::Object(b)) => {
+                let mut entries_a: Vec<_> = a.iter().collect();
+                let mut entries_b: Vec<_> = b.iter().collect();
+                entries_a.sort();
+                entries_b.sort();
+                entries_a.cmp(&entries_b)
+            },
+            (Self::Null, _) => Ordering::Less,
+            (_, Self::Null) => Ordering::Greater,
+            (Self::Bool(_), _) => Ordering::Less,
+            (_, Self::Bool(_)) => Ordering::Greater,
+            (Self::NegInf, _) => Ordering::Less,
+            (_, Self::NegInf) => Ordering::Greater,
+            (Self::Float(_), _) => Ordering::Less,
+            (_, Self::Float(_)) => Ordering::Greater,
+            (Self::PosInf, _) => Ordering::Less,
+            (_, Self::PosInf) => Ordering::Greater,
+            (Self::Nan, _) => Ordering::Less,
+            (_, Self::Nan) => Ordering::Greater,
+            (Self::Int(_), _) => Ordering::Less,
+            (_, Self::Int(_)) => Ordering::Greater,
+            (Self::String(_), _) => Ordering::Less,
+            (_, Self::String(_)) => Ordering::Greater,
+            (Self::Array(_), _) => Ordering::Less,
+            (_, Self::Array(_)) => Ordering::Greater,
+            (Self::Object(_), _) => Ordering::Less,
+            (_, Self::Object(_)) => Ordering::Greater,
+            (Self::Func(_), Self::Func(_)) => Ordering::Equal,
+            (Self::Func(_), Self::Type(_)) => Ordering::Less,
+            (Self::Type(_), Self::Func(_)) => Ordering::Greater,
+            (Self::Type(a), Self::Type(b)) => a.cmp(b),
+        }
+    }
+}
+impl PartialOrd for EvalValueSerializer {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -1318,6 +1372,7 @@ impl EvalValue {
                     a.total_cmp(b)
                 }
             },
+            (EvalValue::String(a), EvalValue::String(b)) => a.cmp(b),
             (EvalValue::Bool(a), EvalValue::Bool(b)) => a.cmp(b),
             (EvalValue::Null, EvalValue::Null) => Ordering::Equal,
             (EvalValue::Array(a), EvalValue::Array(b)) => {
