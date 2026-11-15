@@ -3289,6 +3289,21 @@ pub fn full_formula(text: &str) -> Option<&str> {
     }
     Some(&text[2..text.len() - 1])
 }
+/// Extracts the expression from a string that consists entirely of one formula.
+/// 
+/// Only considers formulas that are fully wrapped in `${...}`.
+///
+pub fn fully_wrapped_formula(text: &str) -> Option<&str> {
+    if !text.starts_with("${") {
+        return None;
+    }
+    let chars = text.chars().collect::<Vec<_>>();
+    let end = find_formula_end(&chars, 2)?;
+    if end + 1 != chars.len() || end == 2 {
+        return None;
+    }
+    Some(&text[2..text.len() - 1])
+}
 
 /// Finds the closing quote of a string whose entire contents are one `${...}` formula.
 ///
@@ -3766,12 +3781,13 @@ fn contains_value(container: &EvalValue, needle: &EvalValue) -> Result<bool> {
 }
 
 /// Returns the current value except in the case it is a formula string, in which case it is parsed and transformed into a no argument function.
+/// Only considers formulas strings that are fully wrapped in `${...}`.
 pub fn value_or_formula(
     value: EvalValue,
 ) -> Result<EvalValue> {
     match value {
         EvalValue::String(s) => {
-            match full_formula(&s)  {
+            match fully_wrapped_formula(&s)  {
                 None => Ok(EvalValue::String(s)),
                 Some(inner) => {
                     let expr = Arc::from(strip_formula_dollars(inner).as_str());
