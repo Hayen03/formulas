@@ -1472,6 +1472,56 @@ impl EvalValue {
         let key: Arc<str> = Arc::from(name);
         (key.clone(), EvalValue::Func(Function::Builtin(key, Arc::new(func)).into()))
     }
+
+    fn pretty_print_inner(&self, idt: usize, first_indent: bool) -> String {
+        let indent = if first_indent { "\t".repeat(idt) } else { String::new() };
+        match self {
+            EvalValue::Null => format!("{indent}null"),
+            EvalValue::Bool(value) => format!("{indent}{value}"),
+            EvalValue::Int(value) => format!("{indent}{value}"),
+            EvalValue::Float(value) => {
+                if value.is_nan() {
+                    format!("{indent}nan")
+                } else if value.is_infinite() {
+                    if value.is_sign_negative() {
+                        format!("{indent}-inf")
+                    } else {
+                        format!("{indent}inf")
+                    }
+                } else if value.fract() == 0.0 {
+                    format!("{indent}{value:.1}")
+                } else {
+                    format!("{indent}{value}")
+                }
+            },
+            EvalValue::String(value) => format!("{indent}\"{value}\""),
+            EvalValue::Array(values) => {
+                let strings: Vec<String> = values.iter().map(|v| v.pretty_print_inner(idt + 1, true)).collect();
+                if strings.is_empty() {
+                    format!("{indent}[]")
+                } else {
+                    format!("{indent}[\n{}\n{indent}]", strings.join(",\n"))
+                }
+            }
+            EvalValue::Object(values) => {
+                let indentp1 = "\t".repeat(idt + 1);
+                let strings: Vec<String> = values
+                    .iter()
+                    .map(|(k, v)| format!("{indentp1}{}: {}", &k.0.pretty_print_inner(idt+1, false), v.pretty_print_inner(idt+1, false)))
+                    .collect();
+                if strings.is_empty() {
+                    format!("{indent}{{}}")
+                } else {
+                    format!("{indent}{{\n{}\n{indent}}}", strings.join(",\n"))
+                }
+            }
+            EvalValue::Func(func) => format!("{indent}{func}"),
+            EvalValue::Type(value_type) => format!("{indent}{value_type}"),
+        }
+    }
+    pub fn pretty_print(&self) -> String {
+        self.pretty_print_inner(0, true)
+    }
 }
 
 impl From<String> for EvalValue {
