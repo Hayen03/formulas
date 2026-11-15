@@ -1577,6 +1577,25 @@ impl EvalValue {
     pub fn pretty_print(&self) -> String {
         self.pretty_print_inner(0, true)
     }
+    pub fn display(&self) -> String {
+        match self {
+            EvalValue::Null => "null".to_string(),
+            EvalValue::Bool(value) => value.to_string(),
+            EvalValue::Int(value) => value.to_string(),
+            EvalValue::Float(value) => value.to_string(),
+            EvalValue::String(value) => value.to_string(),
+            EvalValue::Array(values) => {
+                let strings: Vec<String> = values.iter().map(|v| v.display()).collect();
+                format!("[{}]", strings.join(", "))
+            }
+            EvalValue::Object(values) => {
+                let strings: Vec<String> = values.iter().map(|(k, v)| format!("{}: {}", k.0.display(), v.display())).collect();
+                format!("{{{}}}", strings.join(", "))
+            }
+            EvalValue::Func(func) => func.to_string(),
+            EvalValue::Type(value_type) => value_type.to_string(),
+        }
+    }
 }
 
 impl From<String> for EvalValue {
